@@ -28,16 +28,16 @@ compatibility criterion.
 - [x] Add `ManyUIImGui`/`ImGuiBackend` implementing the public
   `ManyUITUI.Backend` contract (`make_driver`, `launch`, `isopen`, `close`,
   `wait`, `display_size`, `capabilities`).
-- [ ] Choose and document the Dear ImGui Julia binding and supported window/
+- [x] Choose and document the Dear ImGui Julia binding and supported window/
   renderer backends (GLFW/OpenGL first; SDL/Metal later if needed).
-- [ ] Keep Dear ImGui imports optional at package load and provide a clear
+- [x] Keep Dear ImGui imports optional at package load and provide a clear
   installation error when the selected renderer is unavailable.
 - [ ] Define reversible conversion between ManyUI integer-cell regions and
   ImGui logical pixels for layout and hit testing.
 
 ## Phase 1 — Application lifecycle and viewport
 
-- [ ] Open/destroy the native window and ImGui context safely on close,
+- [x] Open/destroy the native window and ImGui context safely on close,
   exceptions and `Ctrl-C`.
 - [ ] Support `wait=false`, `isopen`, `close` and `wait` consistently with
   `ManyUIWeb.WebNativeServer` and `ManyUITUI.launch`.

@@ -13,5 +13,10 @@ include("backend.jl")
 
 export ImGuiBackend, ImGuiDriver
 export push_event!, resize!, take_output!, clear_output!
+export launch_imgui
+
+"""Launch a native Dear ImGui render function when the optional CImGui
+extension is loaded."""
+function launch_imgui end
 
 end

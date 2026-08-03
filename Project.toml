@@ -13,8 +13,11 @@ ManyUITUI = {url = "https://github.com/s-celles/ManyUITUI.jl.git"}
 
 [compat]
 Aqua = "0.8"
+CImGui = "8"
+GLFW = "3"
 ManyUI = "0.1"
 ManyUITUI = "0.1"
+ModernGL = "1"
 Test = "1"
 TestItemRunner = "1"
 julia = "1.12"
@@ -26,3 +29,11 @@ TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [targets]
 test = ["Aqua", "Test", "TestItemRunner"]
+
+[weakdeps]
+CImGui = "5d785b6c-b76f-510e-a07c-3070796c7e87"
+GLFW = "f7f18e0c-5ee9-5ccd-a5bf-e8befd85ed98"
+ModernGL = "66fc600b-dfda-50eb-8b99-91cfa97b1301"
+
+[extensions]
+ManyUICImGuiCImGuiExt = ["CImGui", "GLFW", "ModernGL"]
