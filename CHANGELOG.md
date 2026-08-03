@@ -10,3 +10,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial package scaffold for a future Dear ImGui backend for ManyUI.
+- Headless `ImGuiBackend`/`ImGuiDriver` lifecycle, viewport, resize and event
+  seam conforming to the ManyUITUI driver contract.

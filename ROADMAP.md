@@ -25,7 +25,7 @@ compatibility criterion.
 ## Phase 0 — Contracts and skeleton
 
 - [x] Create the package, CI, TestItemRunner, Aqua, CompatHelper and TagBot.
-- [ ] Add `ManyUIImGui`/`ImGuiBackend` implementing the public
+- [x] Add `ManyUIImGui`/`ImGuiBackend` implementing the public
   `ManyUITUI.Backend` contract (`make_driver`, `launch`, `isopen`, `close`,
   `wait`, `display_size`, `capabilities`).
 - [ ] Choose and document the Dear ImGui Julia binding and supported window/
@@ -42,7 +42,7 @@ compatibility criterion.
 - [ ] Support `wait=false`, `isopen`, `close` and `wait` consistently with
   `ManyUIWeb.WebNativeServer` and `ManyUITUI.launch`.
 - [ ] Handle HiDPI scale, framebuffer size, resize and minimize/restore.
-- [ ] Provide a headless ImGui driver for CI and deterministic widget tests.
+- [x] Provide a headless ImGui driver for CI and deterministic widget tests.
 - [ ] Add a bounded frame scheduler and explicit invalidation for reactive
   changes and animations.
 

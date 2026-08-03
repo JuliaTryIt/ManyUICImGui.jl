@@ -3,8 +3,18 @@ uuid = "18e426b3-1956-47f5-93db-1e658e915efb"
 authors = ["Sebastien Celles <s.celles@gmail.com>"]
 version = "0.1.0"
 
+[deps]
+ManyUI = "4f14d67d-91c5-4d6b-929d-6ac291535b21"
+ManyUITUI = "5c52c6f3-12e3-46fb-a0b2-3b2e56cfefb8"
+
+[sources]
+ManyUI = {url = "https://github.com/s-celles/ManyUI.jl.git"}
+ManyUITUI = {url = "https://github.com/s-celles/ManyUITUI.jl.git"}
+
 [compat]
 Aqua = "0.8"
+ManyUI = "0.1"
+ManyUITUI = "0.1"
 Test = "1"
 TestItemRunner = "1"
 julia = "1.12"
