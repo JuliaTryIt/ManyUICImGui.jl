@@ -15,3 +15,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional CImGui/GLFW/OpenGL3 extension exposing the native window render-loop
   seam without making graphical dependencies mandatory for headless CI.
 - Initial native projection for `Container`, `Label`, `Static` and `Button`.
+- Actionable optional-dependency detection through `native_available()`.

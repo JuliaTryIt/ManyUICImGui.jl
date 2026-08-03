@@ -34,4 +34,17 @@ end
     @test !isopen(driver)
 end
 
+@testitem "Native support reports an actionable optional-dependency error" begin
+    import ManyUICImGui
+    @test !ManyUICImGui.native_available()
+    err = try
+        ManyUICImGui.launch_manyui(() -> nothing)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test occursin("CImGui", sprint(showerror, err))
+end
+
 @run_package_tests
