@@ -141,6 +141,153 @@ function _draw_widget(w::ManyUI.DropDown)
     end
 end
 
+function _draw_widget(w::ManyUI.List)
+    disabled = w.disabled[]
+    disabled && CImGui.BeginDisabled()
+    try
+        for (i, item) in enumerate(w.items)
+            is_selected = (w.sel.cursor == i) || (i in w.sel.rows)
+            label = string(w.format(item))
+            if CImGui.Selectable("$(label)##$(w.node.id)_$i", is_selected)
+                if w.sel.cursor != i
+                    w.sel.cursor = i
+                    w.sel.anchor = i
+                    w.on_change(w)
+                else
+                    w.on_submit(w)
+                end
+                w.version[] = w.version[] + 1
+            end
+        end
+    finally
+        disabled && CImGui.EndDisabled()
+    end
+end
+
+function _draw_widget(w::ManyUI.TreeView)
+    disabled = w.disabled[]
+    disabled && CImGui.BeginDisabled()
+    try
+        rows = ManyUI.tree_rows(w)
+        for (i, r) in enumerate(rows)
+            r.depth > 0 && CImGui.Indent(r.depth * 15.0)
+            prefix = r.leaf ? "  " : (r.node.expanded ? "v " : "> ")
+            label = prefix * string(w.format(r.node.value))
+            is_selected = (w.sel.cursor == i) || (i in w.sel.rows)
+            if CImGui.Selectable("$(label)##$(w.node.id)_$i", is_selected)
+                w.sel.cursor = i
+                w.sel.anchor = i
+                if !r.leaf
+                    # double-click or enter usually toggles, but selectable toggles on single click here.
+                    ManyUI.toggle_node!(w, i)
+                end
+                w.on_change(w)
+                w.version[] = w.version[] + 1
+            end
+            r.depth > 0 && CImGui.Unindent(r.depth * 15.0)
+        end
+    finally
+        disabled && CImGui.EndDisabled()
+    end
+end
+
+function _draw_widget(w::ManyUI.Scrollpane)
+    flags = 0
+    if w.bar_x == ManyUI.ScrollMode.ALWAYS || w.bar_x == ManyUI.ScrollMode.AUTO
+        flags |= CImGui.ImGuiWindowFlags_HorizontalScrollbar
+    end
+    if CImGui.BeginChild("##scroll_$(w.node.id)", CImGui.ImVec2(0, 0), true, flags)
+        try
+            _draw_widget(w.holder)
+        finally
+            CImGui.EndChild()
+        end
+    end
+end
+
+function _draw_widget(w::ManyUI.Table)
+    disabled = w.disabled[]
+    disabled && CImGui.BeginDisabled()
+    try
+        flags = CImGui.ImGuiTableFlags_Borders | CImGui.ImGuiTableFlags_RowBg
+        if CImGui.BeginTable("##table_$(w.node.id)", length(w.grid.headers), flags)
+            for header in w.grid.headers
+                CImGui.TableSetupColumn(header)
+            end
+            CImGui.TableHeadersRow()
+
+            for (i, row) in enumerate(w.rows)
+                CImGui.TableNextRow()
+                for j in 1:length(w.grid.headers)
+                    CImGui.TableSetColumnIndex(j - 1)
+                    label = string(w.cell(row, j))
+                    if j == 1
+                        is_selected = (w.sel.cursor == i) || (i in w.sel.rows)
+                        if CImGui.Selectable("$(label)##$(w.node.id)_$(i)_$(j)", is_selected, CImGui.ImGuiSelectableFlags_SpanAllColumns)
+                            if w.sel.cursor != i
+                                w.sel.cursor = i
+                                w.sel.anchor = i
+                                w.on_change(w)
+                            else
+                                w.on_submit(w)
+                            end
+                            w.version[] += 1
+                        end
+                    else
+                        CImGui.TextUnformatted(label)
+                    end
+                end
+            end
+            CImGui.EndTable()
+        end
+    finally
+        disabled && CImGui.EndDisabled()
+    end
+end
+
+function _draw_widget(w::ManyUI.DataTable)
+    disabled = w.disabled[]
+    disabled && CImGui.BeginDisabled()
+    try
+        flags = CImGui.ImGuiTableFlags_Borders | CImGui.ImGuiTableFlags_RowBg | CImGui.ImGuiTableFlags_Sortable
+        if CImGui.BeginTable("##datatable_$(w.node.id)", length(w.grid.headers), flags)
+            for header in w.grid.headers
+                CImGui.TableSetupColumn(header)
+            end
+            CImGui.TableHeadersRow()
+            
+            # TODO: ImGui sorting callback integration. Currently, we just display the sorted rows.
+            for i in 1:length(w.order)
+                src_i = w.order[i]
+                row = w.rows[src_i]
+                CImGui.TableNextRow()
+                for j in 1:length(w.grid.headers)
+                    CImGui.TableSetColumnIndex(j - 1)
+                    label = string(w.cell(row, j))
+                    if j == 1
+                        is_selected = (w.sel.cursor == src_i) || (src_i in w.sel.rows)
+                        if CImGui.Selectable("$(label)##$(w.node.id)_$(src_i)_$(j)", is_selected, CImGui.ImGuiSelectableFlags_SpanAllColumns)
+                            if w.sel.cursor != src_i
+                                w.sel.cursor = src_i
+                                w.sel.anchor = src_i
+                                w.on_change(w)
+                            else
+                                w.on_submit(w)
+                            end
+                            w.version[] += 1
+                        end
+                    else
+                        CImGui.TextUnformatted(label)
+                    end
+                end
+            end
+            CImGui.EndTable()
+        end
+    finally
+        disabled && CImGui.EndDisabled()
+    end
+end
+
 function _draw_widget(w::ManyUI.Container)
     for child in ManyUI.children(w)
         ManyUI.node(child).visible || continue
