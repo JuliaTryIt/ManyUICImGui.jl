@@ -50,9 +50,9 @@ compatibility criterion.
 
 - [ ] Project rows/columns, grow/shrink, padding, borders, clipping, scroll
   regions, z-order and minimum-size fallback.
-- [ ] Implement labels, rich/static text, containers, separators,
+- [x] Implement labels, rich/static text, containers, separators,
   progress/spinner widgets and disabled states.
-- [ ] Implement buttons, checkboxes, toggles, radio groups, dropdowns and
+- [x] Implement buttons, checkboxes, toggles, radio groups, dropdowns and
   sliders with hover/active/focused states.
 - [ ] Implement text inputs and text areas, including selection, clipboard,
   password mode, multiline editing and IME-safe input.

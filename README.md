@@ -14,9 +14,10 @@ import Pkg
 Pkg.add(["CImGui", "GLFW", "ModernGL"])
 ```
 
-Then call `ManyUICImGui.launch_imgui(ui)` with a function containing the
-CImGui drawing calls. ManyUI widget projection is being implemented on top of
-this seam.
+Then call `ManyUICImGui.launch_manyui(() -> ui())` for the first supported
+projection (`Container`, `Label`, `Static` and `Button`), or use
+`launch_imgui(ui)` with a function containing direct CImGui drawing calls.
+Additional ManyUI widgets are being mapped incrementally.
 
 [![Build Status](https://github.com/s-celles/ManyUICImGui.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/s-celles/ManyUICImGui.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Aqua](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
