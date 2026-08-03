@@ -209,16 +209,18 @@ function _draw_widget(w::ManyUI.Table)
     disabled = w.disabled[]
     disabled && CImGui.BeginDisabled()
     try
+        cols = w.grid.cols
+        ncols = length(cols)
         flags = CImGui.ImGuiTableFlags_Borders | CImGui.ImGuiTableFlags_RowBg
-        if CImGui.BeginTable("##table_$(w.node.id)", length(w.grid.headers), flags)
-            for header in w.grid.headers
-                CImGui.TableSetupColumn(header)
+        if CImGui.BeginTable("##table_$(w.node.id)", ncols, flags)
+            for col in cols
+                CImGui.TableSetupColumn(col.header)
             end
             CImGui.TableHeadersRow()
 
             for (i, row) in enumerate(w.rows)
                 CImGui.TableNextRow()
-                for j in 1:length(w.grid.headers)
+                for j in 1:ncols
                     CImGui.TableSetColumnIndex(j - 1)
                     label = string(w.cell(row, j))
                     if j == 1
@@ -249,10 +251,12 @@ function _draw_widget(w::ManyUI.DataTable)
     disabled = w.disabled[]
     disabled && CImGui.BeginDisabled()
     try
+        cols = w.grid.cols
+        ncols = length(cols)
         flags = CImGui.ImGuiTableFlags_Borders | CImGui.ImGuiTableFlags_RowBg | CImGui.ImGuiTableFlags_Sortable
-        if CImGui.BeginTable("##datatable_$(w.node.id)", length(w.grid.headers), flags)
-            for header in w.grid.headers
-                CImGui.TableSetupColumn(header)
+        if CImGui.BeginTable("##datatable_$(w.node.id)", ncols, flags)
+            for col in cols
+                CImGui.TableSetupColumn(col.header)
             end
             CImGui.TableHeadersRow()
             
@@ -261,7 +265,7 @@ function _draw_widget(w::ManyUI.DataTable)
                 src_i = w.order[i]
                 row = w.rows[src_i]
                 CImGui.TableNextRow()
-                for j in 1:length(w.grid.headers)
+                for j in 1:ncols
                     CImGui.TableSetColumnIndex(j - 1)
                     label = string(w.cell(row, j))
                     if j == 1
