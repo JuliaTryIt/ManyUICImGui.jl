@@ -1,10 +1,9 @@
-using ManyUICImGui
-using Test
-using Aqua
+using TestItemRunner
 
-@testset "ManyUICImGui.jl" begin
-    @testset "Code quality (Aqua.jl)" begin
-        Aqua.test_all(ManyUICImGui)
-    end
-    # Write your tests here.
+@testitem "Aqua.jl" begin
+    import Aqua
+    import ManyUICImGui
+    Aqua.test_all(ManyUICImGui)
 end
+
+@run_package_tests

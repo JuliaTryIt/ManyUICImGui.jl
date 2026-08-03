@@ -1,14 +1,18 @@
 name = "ManyUICImGui"
 uuid = "18e426b3-1956-47f5-93db-1e658e915efb"
 authors = ["Sebastien Celles <s.celles@gmail.com>"]
-version = "1.0.0-DEV"
+version = "0.1.0"
 
 [compat]
+Aqua = "0.8"
+Test = "1"
+TestItemRunner = "1"
 julia = "1.12"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [targets]
-test = ["Aqua", "Test"]
+test = ["Aqua", "Test", "TestItemRunner"]
