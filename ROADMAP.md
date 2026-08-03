@@ -54,9 +54,9 @@ compatibility criterion.
   progress/spinner widgets and disabled states.
 - [x] Implement buttons, checkboxes, toggles, radio groups, dropdowns and
   sliders with hover/active/focused states.
-- [ ] Implement text inputs and text areas, including selection, clipboard,
+- [x] Implement text inputs and text areas, including selection, clipboard,
   password mode, multiline editing and IME-safe input.
-- [ ] Implement lists, tables/data tables, tree views, tabs and scroll panes.
+- [x] Implement lists, tables/data tables, tree views, tabs and scroll panes.
 - [ ] Preserve Unicode graphemes, wide characters, emoji and font fallback.
 
 ## Phase 3 — Canonical events and focus

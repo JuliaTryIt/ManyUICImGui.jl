@@ -288,6 +288,60 @@ function _draw_widget(w::ManyUI.DataTable)
     end
 end
 
+function _draw_widget(w::ManyUI.TextArea)
+    disabled = w.disabled[]
+    disabled && CImGui.BeginDisabled()
+    try
+        content = join(w.lines, "\n")
+        text_len = length(content)
+        buf = Vector{UInt8}(undef, max(1024, text_len + 512))
+        copyto!(buf, 1, Vector{UInt8}(content), 1, text_len)
+        buf[text_len + 1] = 0
+
+        if CImGui.InputTextMultiline("##$(w.node.id)", buf, length(buf), CImGui.ImVec2(-1, 0))
+            new_text = GC.@preserve buf unsafe_string(pointer(buf))
+            empty!(w.lines)
+            append!(w.lines, split(new_text, '\n'))
+            if isempty(w.lines)
+                push!(w.lines, "")
+            end
+            w.version[] += 1
+            w.on_change(w)
+        end
+    finally
+        disabled && CImGui.EndDisabled()
+    end
+end
+
+function _draw_widget(w::ManyUI.Tabs)
+    for child in ManyUI.children(w)
+        ManyUI.node(child).visible || continue
+        _draw_widget(child)
+    end
+end
+
+function _draw_widget(w::ManyUI.TabStrip)
+    disabled = w.disabled[]
+    disabled && CImGui.BeginDisabled()
+    try
+        if CImGui.BeginTabBar("##tabstrip_$(w.node.id)")
+            for (i, title) in enumerate(w.titles)
+                flags = w.selected[] == i ? CImGui.ImGuiTabItemFlags_SetSelected : 0
+                is_open = Ref(true)
+                if CImGui.BeginTabItem("$(title)##$(w.node.id)_$i", is_open, flags)
+                    if w.selected[] != i
+                        w.selected[] = i
+                    end
+                    CImGui.EndTabItem()
+                end
+            end
+            CImGui.EndTabBar()
+        end
+    finally
+        disabled && CImGui.EndDisabled()
+    end
+end
+
 function _draw_widget(w::ManyUI.Container)
     for child in ManyUI.children(w)
         ManyUI.node(child).visible || continue
