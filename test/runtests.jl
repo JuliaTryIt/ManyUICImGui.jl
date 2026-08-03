@@ -47,4 +47,18 @@ end
     @test occursin("CImGui", sprint(showerror, err))
 end
 
+@testitem "Backend availability and capabilities are portable" begin
+    import ManyUI
+    import ManyUITUI
+    import ManyUICImGui
+
+    tui = ManyUITUI.TerminalBackend()
+    imgui = ManyUICImGui.ImGuiBackend()
+    @test ManyUI.backend_available(tui)
+    @test ManyUI.backend_kind(tui) == :tui
+    @test ManyUI.backend_kind(imgui) == :imgui
+    @test hasproperty(ManyUI.backend_capabilities(imgui), :native_window)
+    @test !ManyUI.backend_available(imgui)
+end
+
 @run_package_tests

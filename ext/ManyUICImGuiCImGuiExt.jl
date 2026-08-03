@@ -6,6 +6,8 @@ import GLFW
 import ModernGL
 import ManyUI
 
+ManyUICImGui.native_available() = true
+
 """
     ManyUICImGui.launch_imgui(ui; width=1280, height=720, title="ManyUI")
 

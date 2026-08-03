@@ -14,6 +14,13 @@ struct ImGuiBackend <: ManyUITUI.Backend
     buffer::Int
 end
 
+ManyUI.backend_available(::ImGuiBackend) = native_available()
+ManyUI.backend_kind(::ImGuiBackend) = :imgui
+ManyUI.backend_capabilities(::ImGuiBackend) = merge(
+    ManyUI.DEFAULT_BACKEND_CAPABILITIES,
+    (transparency = true, native_window = true, gpu = native_available(),
+     multi_session = false))
+
 function ImGuiBackend(; size::Size=Size(80, 24),
                       depth::ManyUI.ColorDepth.T=ManyUI.ColorDepth.TRUECOLOR,
                       buffer::Int=256)::ImGuiBackend
