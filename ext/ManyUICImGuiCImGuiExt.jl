@@ -47,6 +47,100 @@ function _draw_widget(w::ManyUI.Button)
     end
 end
 
+function _draw_widget(w::ManyUI.Checkbox)
+    disabled = w.disabled[]
+    disabled && CImGui.BeginDisabled()
+    try
+        b = Ref(w.state[] == ManyUI.CheckState.CHECKED)
+        if CImGui.Checkbox(w.label[], b)
+            w.state[] = b[] ? ManyUI.CheckState.CHECKED : ManyUI.CheckState.UNCHECKED
+            w.on_change(w)
+        end
+    finally
+        disabled && CImGui.EndDisabled()
+    end
+end
+
+function _draw_widget(w::ManyUI.ProgressBar)
+    CImGui.ProgressBar(Cfloat(w.progress[]), CImGui.ImVec2(-1, 0), "")
+end
+
+function _draw_widget(w::ManyUI.Slider)
+    disabled = w.disabled[]
+    disabled && CImGui.BeginDisabled()
+    try
+        f = Ref(Cfloat(w.value[]))
+        if CImGui.SliderFloat("##$(w.node.id)", f, Cfloat(w.min), Cfloat(w.max))
+            w.value[] = Float64(f[])
+            w.on_change(w)
+        end
+    finally
+        disabled && CImGui.EndDisabled()
+    end
+end
+
+function _draw_widget(w::ManyUI.Spinner)
+    idx = ((w.tick[] - 1) % length(w.frames)) + 1
+    CImGui.TextUnformatted(w.frames[idx])
+end
+
+function _draw_widget(w::ManyUI.TextInput)
+    disabled = w.disabled[]
+    disabled && CImGui.BeginDisabled()
+    try
+        text_len = length(w.text[])
+        buf = Vector{UInt8}(undef, max(256, text_len + 128))
+        copyto!(buf, 1, Vector{UInt8}(w.text[]), 1, text_len)
+        buf[text_len + 1] = 0
+
+        flags = w.is_password ? CImGui.ImGuiInputTextFlags_Password : 0
+        if CImGui.InputTextWithHint("##$(w.node.id)", w.placeholder, buf, length(buf), flags)
+            w.text[] = GC.@preserve buf unsafe_string(pointer(buf))
+            w.on_change(w)
+        end
+    finally
+        disabled && CImGui.EndDisabled()
+    end
+end
+
+function _draw_widget(w::ManyUI.RadioGroup)
+    for (i, opt) in enumerate(w.options)
+        disabled = i in w.disabled[]
+        disabled && CImGui.BeginDisabled()
+        try
+            if CImGui.RadioButton("$(opt)##$(w.node.id)_$i", w.selected[] == i)
+                w.selected[] = i
+                w.on_change(w)
+            end
+        finally
+            disabled && CImGui.EndDisabled()
+        end
+    end
+end
+
+function _draw_widget(w::ManyUI.DropDown)
+    disabled = w.disabled[]
+    disabled && CImGui.BeginDisabled()
+    try
+        items = w.panel.list.items
+        preview = w.selected[] == 0 ? w.placeholder : string(w.panel.list.format(items[w.selected[]]))
+        
+        if CImGui.BeginCombo("##$(w.node.id)", preview)
+            for (i, item) in enumerate(items)
+                is_selected = w.selected[] == i
+                if CImGui.Selectable(string(w.panel.list.format(item)), is_selected)
+                    w.selected[] = i
+                    w.on_change(w)
+                end
+                is_selected && CImGui.SetItemDefaultFocus()
+            end
+            CImGui.EndCombo()
+        end
+    finally
+        disabled && CImGui.EndDisabled()
+    end
+end
+
 function _draw_widget(w::ManyUI.Container)
     for child in ManyUI.children(w)
         ManyUI.node(child).visible || continue
