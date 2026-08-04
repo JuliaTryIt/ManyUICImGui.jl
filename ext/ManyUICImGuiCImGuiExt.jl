@@ -716,28 +716,26 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
                      ManyUI.to_rgb(ManyUI.color(:bright_white))
             fg_col = _im_pack_rgb(fg_rgb.r, fg_rgb.g, fg_rgb.b)
             if cell.width == 2
-                # Wide grapheme: center the glyph in its 2-cell span.
-                # ImGui's monospace font renders CJK/emoji at 1 cell
-                # width, but ManyUI reserves 2 cells for them. Centering
-                # avoids left-aligning a narrow glyph in a wide slot.
-                glyph_w = Float32(CImGui.CalcTextSize(content).x)
+                # Wide grapheme: ManyUI reserves 2 cells for CJK/emoji,
+                # but Menlo renders them at 1 cell width (10px). To fill
+                # the 2-cell span visually, scale the font size up by 2x
+                # for wide glyphs and clip to the span width. This makes
+                # 漢字 fill their slot like a real terminal does.
                 span_w = 2 * cw
-                if glyph_w < cw * 1.5
-                    # The font lacks a real glyph for this character
-                    # (e.g. color emoji that FreeType cannot rasterize).
-                    # Draw a placeholder so the user sees that something
-                    # is here and the column alignment stays correct.
-                    placeholder = "□"
-                    pw = Float32(CImGui.CalcTextSize(placeholder).x)
-                    offset_x = max(0.0f0, (span_w - pw) / 2)
-                    CImGui.AddText(dl, font, font_size,
-                        (px + offset_x, row_y), fg_col, placeholder,
-                        C_NULL, span_w)
-                else
+                big_size = font_size * 2.0f0
+                CImGui.PushFont(font, big_size)
+                try
+                    glyph_w = Float32(CImGui.CalcTextSize(content).x)
                     offset_x = max(0.0f0, (span_w - glyph_w) / 2)
-                    CImGui.AddText(dl, font, font_size,
-                        (px + offset_x, row_y), fg_col, content, C_NULL,
-                        span_w)
+                    # Vertically center the larger glyph in the cell
+                    row_h = ch
+                    big_h = CImGui.GetTextLineHeight()
+                    offset_y = max(0.0f0, (row_h - big_h) / 2)
+                    CImGui.AddText(dl, font, big_size,
+                        (px + offset_x, row_y + offset_y), fg_col,
+                        content, C_NULL, span_w)
+                finally
+                    CImGui.PopFont()
                 end
             else
                 CImGui.AddText(dl, font, font_size,
