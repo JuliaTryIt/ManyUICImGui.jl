@@ -722,10 +722,23 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
                 # avoids left-aligning a narrow glyph in a wide slot.
                 glyph_w = Float32(CImGui.CalcTextSize(content).x)
                 span_w = 2 * cw
-                offset_x = max(0.0f0, (span_w - glyph_w) / 2)
-                CImGui.AddText(dl, font, font_size,
-                    (px + offset_x, row_y), fg_col, content, C_NULL,
-                    span_w)
+                if glyph_w < cw * 1.5
+                    # The font lacks a real glyph for this character
+                    # (e.g. color emoji that FreeType cannot rasterize).
+                    # Draw a placeholder so the user sees that something
+                    # is here and the column alignment stays correct.
+                    placeholder = "□"
+                    pw = Float32(CImGui.CalcTextSize(placeholder).x)
+                    offset_x = max(0.0f0, (span_w - pw) / 2)
+                    CImGui.AddText(dl, font, font_size,
+                        (px + offset_x, row_y), fg_col, placeholder,
+                        C_NULL, span_w)
+                else
+                    offset_x = max(0.0f0, (span_w - glyph_w) / 2)
+                    CImGui.AddText(dl, font, font_size,
+                        (px + offset_x, row_y), fg_col, content, C_NULL,
+                        span_w)
+                end
             else
                 CImGui.AddText(dl, font, font_size,
                     (px, row_y), fg_col, content)
