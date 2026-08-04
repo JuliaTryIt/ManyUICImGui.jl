@@ -6,6 +6,7 @@ import GLFW
 import ModernGL
 import ManyUI
 import ManyUITUI
+import HarfBuzz
 
 function __init__()
     ManyUICImGui._NATIVE_AVAILABLE[] = true
@@ -509,6 +510,10 @@ mutable struct _TuiRenderState
     last_mouse_cell::Union{Nothing,Tuple{Int,Int}}
     font::Ptr{CImGui.lib.ImFont}       # primary (monospace)
     cjk_font::Ptr{CImGui.lib.ImFont}   # CJK fallback (Hiragino)
+    # HarfBuzz fonts for glyph availability checks (more reliable than
+    # CImGui.IsGlyphInFont which only checks the baked atlas).
+    hb_primary::Union{Nothing,HarfBuzz.HbFont}
+    hb_cjk::Union{Nothing,HarfBuzz.HbFont}
 end
 
 # Convert ImGui mouse coordinates (screen-space) to a 1-based ManyUI
@@ -743,33 +748,33 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
             fg_col = _im_pack_rgb(fg_rgb.r, fg_rgb.g, fg_rgb.b)
 
             # Choose font: use CJK font if the primary font lacks the
-            # glyph and the CJK font has it. This makes 漢字か render
-            # via Hiragino while ASCII/box-drawing stays on Menlo.
-            # For glyphs missing from BOTH fonts (color emoji that
-            # FreeType cannot rasterize), substitute a visible
-            # placeholder so the user sees something instead of an
-            # empty hexagon.
+            # glyph and the CJK font has it. Use HarfBuzz for glyph
+            # availability checks (more reliable than CImGui's
+            # IsGlyphInFont which only checks the baked atlas).
+            # For glyphs missing from BOTH fonts (color emoji),
+            # substitute a visible placeholder.
             use_font = font
             draw_content = content
-            if cell.width >= 2 && st.cjk_font != C_NULL
+            if cell.width >= 2
                 first_char = first(content)
                 cp = UInt32(first_char)
-                if cp <= 0xFFFF
-                    in_primary = CImGui.IsGlyphInFont(font, UInt16(cp))
-                    in_cjk = CImGui.IsGlyphInFont(st.cjk_font, UInt16(cp))
-                    if !in_primary && in_cjk
-                        use_font = st.cjk_font
-                    elseif !in_primary && !in_cjk
-                        draw_content = "□"
-                    end
+                # Check HarfBuzz fonts if available, fall back to
+                # CImGui.IsGlyphInFont otherwise.
+                in_primary = if st.hb_primary !== nothing
+                    HarfBuzz.has_glyph(st.hb_primary, cp)
                 else
-                    # Supplementary plane (emoji, regional indicators).
-                    hi = UInt16(0xD800 + ((cp - 0x10000) >> 10))
-                    in_primary = CImGui.IsGlyphInFont(font, hi)
-                    in_cjk = CImGui.IsGlyphInFont(st.cjk_font, hi)
-                    if !in_primary && !in_cjk
-                        draw_content = "□"
-                    end
+                    cp <= 0xFFFF && CImGui.IsGlyphInFont(font, UInt16(cp))
+                end
+                in_cjk = if st.hb_cjk !== nothing && st.cjk_font != C_NULL
+                    HarfBuzz.has_glyph(st.hb_cjk, cp)
+                else
+                    st.cjk_font != C_NULL && cp <= 0xFFFF &&
+                    CImGui.IsGlyphInFont(st.cjk_font, UInt16(cp))
+                end
+                if !in_primary && in_cjk && st.cjk_font != C_NULL
+                    use_font = st.cjk_font
+                elseif !in_primary && !in_cjk
+                    draw_content = "□"
                 end
             end
 
@@ -829,6 +834,37 @@ function _tui_draw(st::_TuiRenderState)::Nothing
         end
     end
     fs = CImGui.GetFontSize()
+
+    # Initialize HarfBuzz fonts for glyph availability checks.
+    # Done lazily on the first frame when st.hb_primary is nothing.
+    if st.hb_primary === nothing
+        try
+            for name in ["Menlo", "DejaVu Sans Mono", "Consolas",
+                         "Liberation Mono", "Courier New", "Monaco"]
+                try
+                    st.hb_primary = HarfBuzz.HbFont(name, 18)
+                    break
+                catch
+                end
+            end
+        catch
+        end
+    end
+    if st.hb_cjk === nothing
+        try
+            for name in ["Hiragino Sans GB", "Noto Sans CJK SC",
+                         "Noto Sans CJK", "Microsoft YaHei",
+                         "SimSun", "AppleSDGothicNeo", "Malgun Gothic"]
+                try
+                    st.hb_cjk = HarfBuzz.HbFont(name, 18)
+                    break
+                catch
+                end
+            end
+        catch
+        end
+    end
+
     cw, ch = _measure_cell(st.font, fs)
     st.cell_w = cw
     st.cell_h = ch
@@ -925,7 +961,7 @@ function ManyUICImGui.launch_tui(factory::Function;
                         config = config, stylesheet = stylesheet)
 
     st = _TuiRenderState(app, driver, 8.0f0, 16.0f0, 0.0f0, 0.0f0,
-                         nothing, C_NULL, C_NULL)
+                         nothing, C_NULL, C_NULL, nothing, nothing)
     draw = _tui_render_callback(st, app, Int(width), Int(height),
                                 String(title))
 
@@ -967,7 +1003,7 @@ function ManyUICImGui.launch_tui_app!(app::ManyUITUI.App;
                             "ImGuiTUIDriver; got $(typeof(driver))"))
 
     st = _TuiRenderState(app, driver, 8.0f0, 16.0f0, 0.0f0, 0.0f0,
-                         nothing, C_NULL, C_NULL)
+                         nothing, C_NULL, C_NULL, nothing, nothing)
     draw = _tui_render_callback(st, app, Int(width), Int(height),
                                 String(title))
 
