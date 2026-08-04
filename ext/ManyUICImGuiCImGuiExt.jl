@@ -745,16 +745,30 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
             # Choose font: use CJK font if the primary font lacks the
             # glyph and the CJK font has it. This makes 漢字か render
             # via Hiragino while ASCII/box-drawing stays on Menlo.
+            # For glyphs missing from BOTH fonts (color emoji that
+            # FreeType cannot rasterize), substitute a visible
+            # placeholder so the user sees something instead of an
+            # empty hexagon.
             use_font = font
-            if st.cjk_font != C_NULL && cell.width >= 2
-                # CJK characters are width=2; check if primary has the
-                # glyph and CJK doesn't. If primary lacks it, use CJK.
+            draw_content = content
+            if cell.width >= 2 && st.cjk_font != C_NULL
                 first_char = first(content)
                 cp = UInt32(first_char)
                 if cp <= 0xFFFF
-                    if !CImGui.IsGlyphInFont(font, UInt16(cp)) &&
-                       CImGui.IsGlyphInFont(st.cjk_font, UInt16(cp))
+                    in_primary = CImGui.IsGlyphInFont(font, UInt16(cp))
+                    in_cjk = CImGui.IsGlyphInFont(st.cjk_font, UInt16(cp))
+                    if !in_primary && in_cjk
                         use_font = st.cjk_font
+                    elseif !in_primary && !in_cjk
+                        draw_content = "□"
+                    end
+                else
+                    # Supplementary plane (emoji, regional indicators).
+                    hi = UInt16(0xD800 + ((cp - 0x10000) >> 10))
+                    in_primary = CImGui.IsGlyphInFont(font, hi)
+                    in_cjk = CImGui.IsGlyphInFont(st.cjk_font, hi)
+                    if !in_primary && !in_cjk
+                        draw_content = "□"
                     end
                 end
             end
@@ -762,11 +776,11 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
             if cell.width == 2
                 span_w = 2 * cw
                 CImGui.AddText(dl, use_font, font_size,
-                    (px, row_y), fg_col, content, C_NULL,
+                    (px, row_y), fg_col, draw_content, C_NULL,
                     span_w)
             else
                 CImGui.AddText(dl, use_font, font_size,
-                    (px, row_y), fg_col, content)
+                    (px, row_y), fg_col, draw_content)
             end
         end
     end
