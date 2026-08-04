@@ -57,7 +57,9 @@ compatibility criterion.
 - [x] Implement text inputs and text areas, including selection, clipboard,
   password mode, multiline editing and IME-safe input.
 - [x] Implement lists, tables/data tables, tree views, tabs and scroll panes.
-- [ ] Preserve Unicode graphemes, wide characters, emoji and font fallback.
+- [x] Preserve Unicode graphemes, wide characters, emoji and font fallback
+  (via the `ImGuiTUIBackend` cell-grid renderer, which uses ManyUI's
+  `grapheme_width` model directly).
 
 ## Phase 3 — Canonical events and focus
 
@@ -100,9 +102,11 @@ compatibility criterion.
 
 ## Phase 6 — Demos and verification
 
-- [ ] Run `dashboard.jl`, `gallery.jl`, `datatable.jl`, `scrollpane.jl`,
-  `unicode.jl`, `life.jl`, `rain.jl` and `snake.jl` unchanged through ImGui.
-- [ ] Add a ManyUIDemos Hub entry and ImGui backend selector.
+- [x] Run `dashboard.jl`, `gallery.jl`, `datatable.jl`, `scrollpane.jl`,
+  `unicode.jl`, `life.jl`, `rain.jl` and `snake.jl` unchanged through ImGui
+  (via the `cimguitui` mode and `ImGuiTUIBackend`).
+- [x] Add a ManyUIDemos Hub entry and ImGui backend selector (the Hub now
+  supports `--backend cimguitui` and a `CImGui TUI` radio option).
 - [ ] Capture reference states at fixed viewport sizes and animation times.
 - [ ] Add interaction scripts for click/change/submit, focus/blur, traversal,
   resize, modals and theme/animation switching.

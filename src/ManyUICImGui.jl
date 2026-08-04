@@ -10,11 +10,14 @@ import ManyUITUI: Driver, DriverCaps, DriverInterfaceError, Size,
 
 include("driver.jl")
 include("backend.jl")
+include("cimguitui.jl")
 
 export ImGuiBackend, ImGuiDriver
+export ImGuiTUIBackend, ImGuiTUIDriver
 export push_event!, resize!, take_output!, clear_output!
 export launch_imgui
 export launch_manyui
+export launch_tui, launch_tui_app!
 export native_available
 
 """Launch a native Dear ImGui render function when the optional CImGui
