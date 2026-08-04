@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- HarfBuzz text shaping is now used for per-cell font fallback in the
+  `ImGuiTUIBackend` cell-grid renderer. A `Cell`'s whole `content`
+  (a grapheme cluster, possibly a base codepoint plus combining marks
+  or a ligature sequence such as a regional indicator pair) is shaped
+  via `HarfBuzz.shape`, and a font is selected only when every shaped
+  glyph is present (non-zero glyph ID). This supersedes the previous
+  single-codepoint `has_glyph` check, which incorrectly accepted a
+  font that had the base codepoint but lacked a combining mark, and
+  ignored GSUB ligature formation. `has_glyph` / `IsGlyphInFont` remain
+  as a fallback when HarfBuzz fonts are not loaded.
 - Initial package scaffold for a future Dear ImGui backend for ManyUI.
 - Headless `ImGuiBackend`/`ImGuiDriver` lifecycle, viewport, resize and event
   seam conforming to the ManyUITUI driver contract.

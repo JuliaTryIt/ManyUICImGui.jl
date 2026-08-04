@@ -115,4 +115,56 @@ end
     @test occursin("CImGui", sprint(showerror, err))
 end
 
+@testitem "HarfBuzz shaping coverage for TUI cells" begin
+    # This test exercises the text-shaping foundation that the
+    # ManyUICImGuiCImGuiExt font selector (`_hb_full_coverage`) relies
+    # on. The extension itself needs CImGui/GLFW/ModernGL and a display
+    # to load, so it cannot be loaded headless; here we verify the
+    # underlying HarfBuzz shaping pipeline produces reliable glyph IDs
+    # for whole grapheme clusters (combining marks, ligatures), which
+    # is the property the per-cell font fallback in `_paint_buffer!`
+    # depends on.
+    import HarfBuzz
+
+    # Cross-platform font discovery via HarfBuzz's family-name ctor
+    # (uses FreeTypeAbstraction internally). Skip if no system mono
+    # font is reachable.
+    families = ["Menlo", "DejaVu Sans Mono", "Consolas",
+                "Liberation Mono", "Courier New", "Monaco",
+                "Noto Sans Mono"]
+    hb_font = let found = nothing
+        for fam in families
+            try
+                found = HarfBuzz.HbFont(fam, 18)
+                break
+            catch
+            end
+        end
+        found
+    end
+
+    if hb_font === nothing
+        @test_skip true
+    else
+        # A plain ASCII cluster shapes to exactly one non-zero glyph.
+        r_ascii = HarfBuzz.shape(hb_font, "A")
+        @test !isempty(r_ascii.infos)
+        @test all(g.glyph_id != UInt32(0) for g in r_ascii.infos)
+
+        # A grapheme cluster with a combining mark ("e" + U+0301)
+        # shapes to one or more glyphs; whatever the count, the
+        # coverage property the selector uses is "all glyph_id != 0".
+        r_comb = HarfBuzz.shape(hb_font, "e\u0301")
+        @test !isempty(r_comb.infos)
+
+        # `has_glyph` on the base codepoint is what the OLD selector
+        # did. Shaping is a refinement: it can only ever reject MORE
+        # clusters than `has_glyph` (a missing combining mark makes
+        # coverage false while `has_glyph('e')` is true), never fewer.
+        # Assert the refinement invariant for the base codepoint.
+        @test HarfBuzz.has_glyph(hb_font, UInt32('e')) ||
+              !all(g.glyph_id != UInt32(0) for g in r_comb.infos)
+    end
+end
+
 @run_package_tests

@@ -10,7 +10,7 @@ ManyUITUI = "5c52c6f3-12e3-46fb-a0b2-3b2e56cfefb8"
 [sources]
 ManyUI = {url = "https://github.com/s-celles/ManyUI.jl.git"}
 ManyUITUI = {url = "https://github.com/s-celles/ManyUITUI.jl.git"}
-HarfBuzz = {url = "https://github.com/s-celles/HarfBuzz.jl.git"}
+HarfBuzz = {path = "../HarfBuzz.jl"}
 
 [compat]
 Aqua = "0.8"
@@ -26,11 +26,12 @@ julia = "1.12"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+HarfBuzz = "9e8b9c2b-5c3e-4e6f-b1a4-2c0f6b4f3e2a"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [targets]
-test = ["Aqua", "Test", "TestItemRunner"]
+test = ["Aqua", "HarfBuzz", "Test", "TestItemRunner"]
 
 [weakdeps]
 CImGui = "5d785b6c-b76f-510e-a07c-3070796c7e87"

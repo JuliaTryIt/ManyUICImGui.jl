@@ -180,11 +180,12 @@ tui_native_available()::Bool = _TUI_NATIVE_AVAILABLE[]
 
 function launch_tui(factory; kwargs...)
     throw(ArgumentError("ManyUICImGui.launch_tui requires the optional " *
-                        "CImGui, GLFW and ModernGL dependencies"))
+                        "CImGui, GLFW, HarfBuzz and ModernGL dependencies"))
 
 end
 
 function launch_tui_app!(app; kwargs...)
     throw(ArgumentError("ManyUICImGui.launch_tui_app! requires the " *
-                        "optional CImGui, GLFW and ModernGL dependencies"))
+                        "optional CImGui, GLFW, HarfBuzz and ModernGL " *
+                        "dependencies"))
 end

@@ -26,12 +26,12 @@ const _NATIVE_AVAILABLE = Ref(false)
 native_available()::Bool = _NATIVE_AVAILABLE[]
 
 function launch_imgui(ui::Function, args...; kwargs...)
-    throw(ArgumentError("ManyUICImGui native support requires CImGui, GLFW and ModernGL; install the optional graphics dependencies"))
+    throw(ArgumentError("ManyUICImGui native support requires CImGui, GLFW, HarfBuzz and ModernGL; install the optional graphics dependencies"))
 end
 
 """Launch a ManyUI widget factory once the optional ImGui extension is loaded."""
 function launch_manyui(ui::Function, args...; kwargs...)
-    throw(ArgumentError("ManyUICImGui native support requires CImGui, GLFW and ModernGL; install the optional graphics dependencies"))
+    throw(ArgumentError("ManyUICImGui native support requires CImGui, GLFW, HarfBuzz and ModernGL; install the optional graphics dependencies"))
 end
 
 end

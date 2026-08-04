@@ -510,8 +510,10 @@ mutable struct _TuiRenderState
     last_mouse_cell::Union{Nothing,Tuple{Int,Int}}
     font::Ptr{CImGui.lib.ImFont}       # primary (monospace)
     cjk_font::Ptr{CImGui.lib.ImFont}   # CJK fallback (Hiragino)
-    # HarfBuzz fonts for glyph availability checks (more reliable than
-    # CImGui.IsGlyphInFont which only checks the baked atlas).
+    # HarfBuzz fonts for text-shaping-based coverage checks. Shaping
+    # the whole grapheme cluster (via _hb_full_coverage) is more
+    # correct than single-codepoint has_glyph / IsGlyphInFont: it
+    # catches missing combining marks and honors GSUB ligatures.
     hb_primary::Union{Nothing,HarfBuzz.HbFont}
     hb_cjk::Union{Nothing,HarfBuzz.HbFont}
 end
@@ -699,6 +701,33 @@ function _pump_keys!(d::ManyUICImGui.ImGuiTUIDriver,
     return nothing
 end
 
+# Shape `text` with `hb_font` and return true when every shaped glyph
+# is present (non-zero glyph ID). This is a proper text-shaping
+# coverage check: HarfBuzz consults the font's GSUB/GPOS tables, so
+# combining marks, ligatures and ZWJ sequences are evaluated as a
+# whole rather than codepoint-by-codepoint.
+#
+# This matters for the TUI cell grid because a `Cell`'s `content` is a
+# whole grapheme cluster. Checking only the first codepoint (as
+# `has_glyph` does) answers the wrong question for clusters like
+# "e" + U+0301 (combining acute): a font may have "e" but lack the
+# combining mark, so `has_glyph(font, 'e')` is true yet the cluster
+# cannot be rendered. Shaping produces a `.notdef` (glyph_id 0) for
+# the missing mark, and this function returns false, letting the
+# renderer fall back to the CJK font or the `□` placeholder.
+#
+# `HarfBuzz.shape` is a one-shot helper that allocates an `HbBuffer`
+# per call; it is only invoked for `cell.width >= 2` cells (CJK /
+# emoji), which are a small fraction of a typical TUI frame, so the
+# per-frame cost is bounded.
+function _hb_full_coverage(hb_font::HarfBuzz.HbFont,
+                           text::AbstractString)::Bool
+    isempty(text) && return true
+    result = HarfBuzz.shape(hb_font, text)
+    isempty(result.infos) && return false
+    return all(g.glyph_id != UInt32(0) for g in result.infos)
+end
+
 # Paint `app.back` (the Buffer the App loop just filled) into the ImGui
 # window using ImDrawList. One AddRectFilled per cell with a non-default
 # background, one AddText per cell with content.
@@ -747,29 +776,32 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
                      ManyUI.to_rgb(ManyUI.color(:bright_white))
             fg_col = _im_pack_rgb(fg_rgb.r, fg_rgb.g, fg_rgb.b)
 
-            # Choose font: use CJK font if the primary font lacks the
-            # glyph and the CJK font has it. Use HarfBuzz for glyph
-            # availability checks (more reliable than CImGui's
-            # IsGlyphInFont which only checks the baked atlas).
-            # For glyphs missing from BOTH fonts (color emoji),
-            # substitute a visible placeholder.
+            # Choose font: shape the WHOLE cell content (a grapheme
+            # cluster, possibly with combining marks or a ligature
+            # sequence such as a regional indicator pair) via HarfBuzz
+            # and require every shaped glyph to be present in the
+            # font. This rejects a font that has the base codepoint but
+            # lacks a combining mark, and accepts a font whose GSUB
+            # table forms a ligature from several codepoints. Falls
+            # back to single-codepoint has_glyph / IsGlyphInFont when
+            # HarfBuzz fonts are not loaded. For glyphs missing from
+            # BOTH fonts (color emoji), substitute a visible
+            # placeholder.
             use_font = font
             draw_content = content
             if cell.width >= 2
-                first_char = first(content)
-                cp = UInt32(first_char)
-                # Check HarfBuzz fonts if available, fall back to
-                # CImGui.IsGlyphInFont otherwise.
+                first_cp = UInt32(first(content))
                 in_primary = if st.hb_primary !== nothing
-                    HarfBuzz.has_glyph(st.hb_primary, cp)
+                    _hb_full_coverage(st.hb_primary, content)
                 else
-                    cp <= 0xFFFF && CImGui.IsGlyphInFont(font, UInt16(cp))
+                    first_cp <= 0xFFFF &&
+                        CImGui.IsGlyphInFont(font, UInt16(first_cp))
                 end
                 in_cjk = if st.hb_cjk !== nothing && st.cjk_font != C_NULL
-                    HarfBuzz.has_glyph(st.hb_cjk, cp)
+                    _hb_full_coverage(st.hb_cjk, content)
                 else
-                    st.cjk_font != C_NULL && cp <= 0xFFFF &&
-                    CImGui.IsGlyphInFont(st.cjk_font, UInt16(cp))
+                    st.cjk_font != C_NULL && first_cp <= 0xFFFF &&
+                        CImGui.IsGlyphInFont(st.cjk_font, UInt16(first_cp))
                 end
                 if !in_primary && in_cjk && st.cjk_font != C_NULL
                     use_font = st.cjk_font
@@ -835,8 +867,11 @@ function _tui_draw(st::_TuiRenderState)::Nothing
     end
     fs = CImGui.GetFontSize()
 
-    # Initialize HarfBuzz fonts for glyph availability checks.
+    # Initialize HarfBuzz fonts for text-shaping-based coverage checks.
     # Done lazily on the first frame when st.hb_primary is nothing.
+    # These fonts feed `_hb_full_coverage`, which shapes a cell's
+    # whole grapheme cluster to decide whether the primary or CJK
+    # font fully covers it.
     if st.hb_primary === nothing
         try
             for name in ["Menlo", "DejaVu Sans Mono", "Consolas",
