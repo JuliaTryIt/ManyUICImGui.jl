@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Bake proper glyph ranges into the ImGui font atlas so non-ASCII
+  cells actually rasterize. Previously `_load_fonts!` passed `C_NULL`
+  for `glyph_ranges`, so the atlas baked only the default ASCII +
+  Latin-1 set and `AddText` rendered nothing for CJK ideographs
+  (漢字), kana (か), fullwidth Latin (ｆ) and combining-mark clusters
+  (e + U+0301). The primary monospace font now bakes Latin Extended,
+  combining diacriticals, Greek, Cyrillic, general punctuation, box
+  drawing and geometric shapes; the CJK fallback bakes CJK symbols,
+  Hiragana, Katakana, CJK unified ideographs (incl. Extension A),
+  fullwidth forms and BMP symbol/dingbat bases (❤, ☝). Color emoji
+  above U+FFFF (😀, 👨‍👩‍👧‍👦, 🇫🇷) cannot be baked because `ImWchar`
+  is 16-bit; those clusters render as the `□` placeholder.
+
 ### Added
 
 - HarfBuzz text shaping is now used for per-cell font fallback in the

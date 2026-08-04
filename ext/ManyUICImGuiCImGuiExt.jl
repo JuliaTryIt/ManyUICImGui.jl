@@ -66,6 +66,48 @@ const _CJK_FONT_CANDIDATES = String[
     "/usr/share/fonts/truetype/droid/DroidSansFallback.ttf",
 ]
 
+# Glyph ranges for the atlas. CImGui.jl only wraps
+# `GetGlyphRangesDefault` (ASCII + Latin-1), so without explicit ranges
+# the CJK fallback font bakes NO ideographs/kana and `AddText` renders
+# nothing for 漢字か / fullwidth / combining-mark cells. These ranges
+# are `ImWchar` (= `UInt16`) arrays, terminated by 0, kept as `const`
+# so they outlive the atlas (ImGui does not copy the pointer).
+#
+# `ImWchar` is 16-bit, so code points above U+FFFF (😀 U+1F600, the ZWJ
+# family 👨‍👩‍👧‍👦 U+1F468.., regional indicators 🇫🇷 U+1F1E6..) CANNOT be
+# baked into the atlas at all; those clusters render as the `□`
+# placeholder chosen by `_paint_buffer!`. BMP symbols that emoji
+# presentation can build on (❤ U+2764, ☝ U+261D) ARE baked so their
+# monochrome base shapes render.
+
+const _MONO_GLYPH_RANGES = UInt16[
+    0x0020, 0x00FF,  # Basic Latin + Latin-1 Supplement (the default)
+    0x0100, 0x024F,  # Latin Extended-A/B
+    0x0300, 0x036F,  # Combining Diacritical Marks (e + U+0301)
+    0x0370, 0x03FF,  # Greek and Coptic
+    0x0400, 0x04FF,  # Cyrillic
+    0x2010, 0x205E,  # General Punctuation
+    0x2190, 0x21FF,  # Arrows
+    0x2500, 0x257F,  # Box Drawing
+    0x2580, 0x259F,  # Block Elements
+    0x25A0, 0x25FF,  # Geometric Shapes
+    0x2600, 0x26FF,  # Miscellaneous Symbols
+    0,
+]
+
+const _CJK_GLYPH_RANGES = UInt16[
+    0x3000, 0x303F,  # CJK Symbols and Punctuation
+    0x3040, 0x309F,  # Hiragana (か)
+    0x30A0, 0x30FF,  # Katakana
+    0x3400, 0x4DBF,  # CJK Unified Ideographs Extension A
+    0x4E00, 0x9FFF,  # CJK Unified Ideographs (漢字)
+    0xF900, 0xFAFF,  # CJK Compatibility Ideographs
+    0xFE00, 0xFE0F,  # Variation Selectors (VS16 in ❤️/☝️)
+    0xFF00, 0xFFEF,  # Fullwidth Forms (ｆ)
+    0x2600, 0x27BF,  # Miscellaneous Symbols + Dingbats (❤, ☝)
+    0,
+]
+
 function _load_fonts!(ctx)::Pair{Ptr{CImGui.lib.ImFont}, Ptr{CImGui.lib.ImFont}}
     io = CImGui.GetIO()
     fonts = unsafe_load(getproperty(io, :Fonts))
@@ -74,7 +116,8 @@ function _load_fonts!(ctx)::Pair{Ptr{CImGui.lib.ImFont}, Ptr{CImGui.lib.ImFont}}
     for path in _MONO_FONT_CANDIDATES
         isfile(path) || continue
         try
-            font = CImGui.AddFontFromFileTTF(fonts, path, 18.0f0, C_NULL, C_NULL)
+            font = CImGui.AddFontFromFileTTF(fonts, path, 18.0f0, C_NULL,
+                                             pointer(_MONO_GLYPH_RANGES))
             if font != C_NULL
                 primary = font
                 break
@@ -87,7 +130,8 @@ function _load_fonts!(ctx)::Pair{Ptr{CImGui.lib.ImFont}, Ptr{CImGui.lib.ImFont}}
     for path in _CJK_FONT_CANDIDATES
         isfile(path) || continue
         try
-            font = CImGui.AddFontFromFileTTF(fonts, path, 18.0f0, C_NULL, C_NULL)
+            font = CImGui.AddFontFromFileTTF(fonts, path, 18.0f0, C_NULL,
+                                             pointer(_CJK_GLYPH_RANGES))
             if font != C_NULL
                 cjk = font
                 break
