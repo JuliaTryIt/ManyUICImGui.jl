@@ -19,7 +19,8 @@ export native_available
 
 """Launch a native Dear ImGui render function when the optional CImGui
 extension is loaded."""
-native_available() = false
+const _NATIVE_AVAILABLE = Ref(false)
+native_available()::Bool = _NATIVE_AVAILABLE[]
 
 function launch_imgui(ui::Function, args...; kwargs...)
     throw(ArgumentError("ManyUICImGui native support requires CImGui, GLFW and ModernGL; install the optional graphics dependencies"))
