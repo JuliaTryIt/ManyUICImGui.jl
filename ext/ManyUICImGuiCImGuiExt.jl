@@ -54,21 +54,58 @@ const _MONO_FONT_CANDIDATES = String[
     "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
 ]
 
+# CJK font candidates to merge with the primary monospace font, so
+# that characters like 漢字か render. ImGui's FreeType backend bakes
+# merged fonts on demand, so a merged glyph may report CalcTextSize=0
+# before the first render frame but will appear correctly on screen.
+const _CJK_FONT_CANDIDATES = String[
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/droid/DroidSansFallback.ttf",
+]
+
 function _load_monospace_font!(ctx)
     io = CImGui.GetIO()
     fonts_ptr = getproperty(io, :Fonts)
     fonts = unsafe_load(fonts_ptr)
+
+    # Load the primary monospace font
+    primary = C_NULL
     for path in _MONO_FONT_CANDIDATES
         isfile(path) || continue
         try
             font = CImGui.AddFontFromFileTTF(fonts, path, 18.0f0)
             if font != C_NULL
-                return true
+                primary = font
+                break
             end
         catch
         end
     end
-    return false
+    primary == C_NULL && return false
+
+    # Merge a CJK font so that CJK ideographs and kana render. Without
+    # this, Menlo renders 漢字 as missing-glyph boxes.
+    cfg = Ref{CImGui.lib.ImFontConfig}()
+    cfg_ptr = pointer_from_objref(cfg)
+    # Set MergeMode=true (offset 53), SizePixels=18.0 (offset 60),
+    # FontDataOwnedByAtlas=true (offset 52)
+    unsafe_store!(convert(Ptr{Bool}, cfg_ptr + 53), true)
+    unsafe_store!(convert(Ptr{Float32}, cfg_ptr + 60), 18.0f0)
+    unsafe_store!(convert(Ptr{Bool}, cfg_ptr + 52), true)
+    for path in _CJK_FONT_CANDIDATES
+        isfile(path) || continue
+        try
+            CImGui.AddFontFromFileTTF(fonts, path, 18.0f0, cfg, C_NULL)
+            break
+        catch
+        end
+    end
+
+    return true
 end
 
 function _draw_widget(w::ManyUI.Label)
@@ -716,27 +753,14 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
                      ManyUI.to_rgb(ManyUI.color(:bright_white))
             fg_col = _im_pack_rgb(fg_rgb.r, fg_rgb.g, fg_rgb.b)
             if cell.width == 2
-                # Wide grapheme: ManyUI reserves 2 cells for CJK/emoji,
-                # but Menlo renders them at 1 cell width (10px). To fill
-                # the 2-cell span visually, scale the font size up by 2x
-                # for wide glyphs and clip to the span width. This makes
-                # 漢字 fill their slot like a real terminal does.
+                # Wide grapheme: center the glyph in its 2-cell span.
+                # With the merged CJK font, the glyph will be baked on
+                # first render. CalcTextSize may return 0 before baking,
+                # so we center conservatively.
                 span_w = 2 * cw
-                big_size = font_size * 2.0f0
-                CImGui.PushFont(font, big_size)
-                try
-                    glyph_w = Float32(CImGui.CalcTextSize(content).x)
-                    offset_x = max(0.0f0, (span_w - glyph_w) / 2)
-                    # Vertically center the larger glyph in the cell
-                    row_h = ch
-                    big_h = CImGui.GetTextLineHeight()
-                    offset_y = max(0.0f0, (row_h - big_h) / 2)
-                    CImGui.AddText(dl, font, big_size,
-                        (px + offset_x, row_y + offset_y), fg_col,
-                        content, C_NULL, span_w)
-                finally
-                    CImGui.PopFont()
-                end
+                CImGui.AddText(dl, font, font_size,
+                    (px, row_y), fg_col, content, C_NULL,
+                    span_w)
             else
                 CImGui.AddText(dl, font, font_size,
                     (px, row_y), fg_col, content)
