@@ -29,13 +29,10 @@ function ManyUICImGui.launch_imgui(ui::Function;
     CImGui.set_backend(:GlfwOpenGL3)
     ctx = CImGui.CreateContext()
 
-    # Load a Unicode monospace font so box-drawing characters (│─┌┐└┘),
-    # CJK ideographs, and emoji render instead of showing as missing-glyph
-    # boxes (which make the TUI grid appear blank). The default ImGui
-    # font (ProggyClean) only covers ASCII. Menlo is a system monospace
-    # font on macOS with full Unicode coverage; fall back to the default
-    # if no system monospace TTF is found.
-    _load_monospace_font!(ctx)
+    # Load fonts: a monospace primary (Menlo) for ASCII/box-drawing, and
+    # a CJK fallback (Hiragino Sans GB) for 漢字か. Per-cell font
+    # selection is done in _paint_buffer!.
+    _fonts = _load_fonts!(ctx)
 
     spawn = wait ? false : 1
     CImGui.render(ui, ctx; window_size=(Int(width), Int(height)),
@@ -45,6 +42,11 @@ end
 # Candidate monospace TTF/TTC paths, in priority order. The first that
 # exists wins. TTC (TrueType Collection) files are handled by ImGui's
 # font loader as of the FreeType backend.
+mutable struct _FontPair
+    primary::Ptr{CImGui.lib.ImFont}    # Menlo: monospace, box-drawing, symbols
+    cjk::Ptr{CImGui.lib.ImFont}        # Hiragino: CJK ideographs, kana
+end
+
 const _MONO_FONT_CANDIDATES = String[
     "/System/Library/Fonts/Menlo.ttc",
     "/System/Library/Fonts/Monaco.ttf",
@@ -54,10 +56,6 @@ const _MONO_FONT_CANDIDATES = String[
     "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
 ]
 
-# CJK font candidates to merge with the primary monospace font, so
-# that characters like 漢字か render. ImGui's FreeType backend bakes
-# merged fonts on demand, so a merged glyph may report CalcTextSize=0
-# before the first render frame but will appear correctly on screen.
 const _CJK_FONT_CANDIDATES = String[
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
     "/System/Library/Fonts/STHeiti Medium.ttc",
@@ -67,17 +65,15 @@ const _CJK_FONT_CANDIDATES = String[
     "/usr/share/fonts/truetype/droid/DroidSansFallback.ttf",
 ]
 
-function _load_monospace_font!(ctx)
+function _load_fonts!(ctx)::Pair{Ptr{CImGui.lib.ImFont}, Ptr{CImGui.lib.ImFont}}
     io = CImGui.GetIO()
-    fonts_ptr = getproperty(io, :Fonts)
-    fonts = unsafe_load(fonts_ptr)
+    fonts = unsafe_load(getproperty(io, :Fonts))
 
-    # Load the primary monospace font
     primary = C_NULL
     for path in _MONO_FONT_CANDIDATES
         isfile(path) || continue
         try
-            font = CImGui.AddFontFromFileTTF(fonts, path, 18.0f0)
+            font = CImGui.AddFontFromFileTTF(fonts, path, 18.0f0, C_NULL, C_NULL)
             if font != C_NULL
                 primary = font
                 break
@@ -85,27 +81,21 @@ function _load_monospace_font!(ctx)
         catch
         end
     end
-    primary == C_NULL && return false
 
-    # Merge a CJK font so that CJK ideographs and kana render. Without
-    # this, Menlo renders 漢字 as missing-glyph boxes.
-    cfg = Ref{CImGui.lib.ImFontConfig}()
-    cfg_ptr = pointer_from_objref(cfg)
-    # Set MergeMode=true (offset 53), SizePixels=18.0 (offset 60),
-    # FontDataOwnedByAtlas=true (offset 52)
-    unsafe_store!(convert(Ptr{Bool}, cfg_ptr + 53), true)
-    unsafe_store!(convert(Ptr{Float32}, cfg_ptr + 60), 18.0f0)
-    unsafe_store!(convert(Ptr{Bool}, cfg_ptr + 52), true)
+    cjk = C_NULL
     for path in _CJK_FONT_CANDIDATES
         isfile(path) || continue
         try
-            CImGui.AddFontFromFileTTF(fonts, path, 18.0f0, cfg, C_NULL)
-            break
+            font = CImGui.AddFontFromFileTTF(fonts, path, 18.0f0, C_NULL, C_NULL)
+            if font != C_NULL
+                cjk = font
+                break
+            end
         catch
         end
     end
 
-    return true
+    return primary => cjk
 end
 
 function _draw_widget(w::ManyUI.Label)
@@ -516,10 +506,9 @@ mutable struct _TuiRenderState
     cell_h::Float32
     origin_x::Float32
     origin_y::Float32
-    # Last mouse cell the ManyUI loop was told about, for DRAG events.
     last_mouse_cell::Union{Nothing,Tuple{Int,Int}}
-    # Monospace font ref, resolved once per frame in case it changes.
-    font::Ptr{CImGui.lib.ImFont}
+    font::Ptr{CImGui.lib.ImFont}       # primary (monospace)
+    cjk_font::Ptr{CImGui.lib.ImFont}   # CJK fallback (Hiragino)
 end
 
 # Convert ImGui mouse coordinates (screen-space) to a 1-based ManyUI
@@ -752,17 +741,31 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
                      ManyUI.to_rgb(cell.style.fg) :
                      ManyUI.to_rgb(ManyUI.color(:bright_white))
             fg_col = _im_pack_rgb(fg_rgb.r, fg_rgb.g, fg_rgb.b)
+
+            # Choose font: use CJK font if the primary font lacks the
+            # glyph and the CJK font has it. This makes 漢字か render
+            # via Hiragino while ASCII/box-drawing stays on Menlo.
+            use_font = font
+            if st.cjk_font != C_NULL && cell.width >= 2
+                # CJK characters are width=2; check if primary has the
+                # glyph and CJK doesn't. If primary lacks it, use CJK.
+                first_char = first(content)
+                cp = UInt32(first_char)
+                if cp <= 0xFFFF
+                    if !CImGui.IsGlyphInFont(font, UInt16(cp)) &&
+                       CImGui.IsGlyphInFont(st.cjk_font, UInt16(cp))
+                        use_font = st.cjk_font
+                    end
+                end
+            end
+
             if cell.width == 2
-                # Wide grapheme: center the glyph in its 2-cell span.
-                # With the merged CJK font, the glyph will be baked on
-                # first render. CalcTextSize may return 0 before baking,
-                # so we center conservatively.
                 span_w = 2 * cw
-                CImGui.AddText(dl, font, font_size,
+                CImGui.AddText(dl, use_font, font_size,
                     (px, row_y), fg_col, content, C_NULL,
                     span_w)
             else
-                CImGui.AddText(dl, font, font_size,
+                CImGui.AddText(dl, use_font, font_size,
                     (px, row_y), fg_col, content)
             end
         end
@@ -794,7 +797,23 @@ end
 # The per-frame draw callback. Runs the App loop's input pump, calls
 # `frame!` to paint `app.back`, then rasterizes the buffer.
 function _tui_draw(st::_TuiRenderState)::Nothing
+    # Resolve fonts from the current ImGui context. The primary font
+    # (index 0) is the monospace; font index 1 is the CJK fallback.
+    io = CImGui.GetIO()
+    fonts = unsafe_load(getproperty(io, :Fonts))
     st.font = CImGui.GetFont()
+    # Get the CJK font (second font in the atlas, if loaded)
+    if st.cjk_font == C_NULL
+        # Try to retrieve it from the atlas's Fonts vector
+        try
+            fonts_vec = unsafe_load(getproperty(fonts, :Fonts))
+            n = unsafe_load(getproperty(fonts, :Size))
+            if n >= 2
+                st.cjk_font = unsafe_load(fonts_vec + sizeof(Ptr{Cvoid}))
+            end
+        catch
+        end
+    end
     fs = CImGui.GetFontSize()
     cw, ch = _measure_cell(st.font, fs)
     st.cell_w = cw
@@ -892,7 +911,7 @@ function ManyUICImGui.launch_tui(factory::Function;
                         config = config, stylesheet = stylesheet)
 
     st = _TuiRenderState(app, driver, 8.0f0, 16.0f0, 0.0f0, 0.0f0,
-                         nothing, C_NULL)
+                         nothing, C_NULL, C_NULL)
     draw = _tui_render_callback(st, app, Int(width), Int(height),
                                 String(title))
 
@@ -934,7 +953,7 @@ function ManyUICImGui.launch_tui_app!(app::ManyUITUI.App;
                             "ImGuiTUIDriver; got $(typeof(driver))"))
 
     st = _TuiRenderState(app, driver, 8.0f0, 16.0f0, 0.0f0, 0.0f0,
-                         nothing, C_NULL)
+                         nothing, C_NULL, C_NULL)
     draw = _tui_render_callback(st, app, Int(width), Int(height),
                                 String(title))
 
