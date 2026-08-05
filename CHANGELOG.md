@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fix atlas fallback-font retrieval so CJK / emoji cells route to the
+  right font. The previous code read `ImVector<ImFont*>` with
+  `getproperty(fonts, :Size)` on `Ptr{ImFontAtlas}` (no such field) and
+  `struct + int` (a Julia struct is not a pointer), which threw and was
+  swallowed by the surrounding `try/catch` -- so `cjk_font` stayed
+  `C_NULL` and every exotic cluster fell through to the `□` placeholder.
+  The vector is now read correctly (`fv.Size` + `fv.Data` + offset
+  indexing), and the primary / CJK / emoji fonts are recovered by atlas
+  index.
 - Bake proper glyph ranges into the ImGui font atlas so non-ASCII
   cells actually rasterize. Previously `_load_fonts!` passed `C_NULL`
   for `glyph_ranges`, so the atlas baked only the default ASCII +
@@ -18,12 +27,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   combining diacriticals, Greek, Cyrillic, general punctuation, box
   drawing and geometric shapes; the CJK fallback bakes CJK symbols,
   Hiragana, Katakana, CJK unified ideographs (incl. Extension A),
-  fullwidth forms and BMP symbol/dingbat bases (❤, ☝). Color emoji
-  above U+FFFF (😀, 👨‍👩‍👧‍👦, 🇫🇷) cannot be baked because `ImWchar`
-  is 16-bit; those clusters render as the `□` placeholder.
+  fullwidth forms and BMP symbol/dingbat bases (❤, ☝). The emoji
+  fallback bakes the SMP emoji ranges (Emoticons, Regional Indicators,
+  Misc/Transport/Supplemental Symbols, VS16, ZWJ) as `UInt32`.
+- Strip variation selectors (U+FE00..U+FE0F) before both the HarfBuzz
+  coverage check and `AddText`. Without this, `_hb_full_coverage("❤️")`
+  returned false (the emoji font has no VS16 glyph) and the whole
+  cluster routed to `□`; VS16 also forced the emoji font over the
+  primary monospace one so ❤️/☝️ render in color, not Menlo's
+  monochrome outline (Menlo carries U+2764).
 
 ### Added
 
+- Portable font discovery: macOS / Linux / Windows candidate paths
+  (plus `~/Library/Fonts`, `~/.fonts` via `expanduser`); no hardcoded
+  user paths. Twemoji Mozilla COLRv0 is the preferred color-emoji
+  font (FreeType auto-rasterizes COLRv0 to BGRA at any pixel size,
+  unlike COLRv1 / Noto Color Emoji).
+- Color-emoji rendering for single-codepoint clusters (😀 ❤️ ☝️).
+  Requires a `libcimgui` built with `IMGUI_ENABLE_FREETYPE` +
+  `IMGUI_USE_WCHAR32` (32-bit `ImWchar` for SMP) -- see
+  `docs/src/upstream-emoji-shaping.md` for the upstream build
+  strategy. With the stock `CImGui.jl` (stb, `ImWchar16`) SMP emoji
+  still render as the `□` placeholder.
+- Shaping seam for GSUB ligatures (ZWJ families 👨‍👩‍👧‍👦,
+  regional-indicator flags 🇫🇷): ligature clusters call
+  `CImGui.RenderShapedText` when `CImGui.HasShaping()` (a
+  `libcimgui` built with `IMGUI_ENABLE_HARFBUZZ_SHAPING`), otherwise
+  fall back to `AddText` (components). `HarfBuzz` is now a weakdep.
 - HarfBuzz text shaping is now used for per-cell font fallback in the
   `ImGuiTUIBackend` cell-grid renderer. A `Cell`'s whole `content`
   (a grapheme cluster, possibly a base codepoint plus combining marks

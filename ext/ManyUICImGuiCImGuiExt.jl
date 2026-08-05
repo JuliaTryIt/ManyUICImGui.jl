@@ -46,41 +46,106 @@ end
 mutable struct _FontPair
     primary::Ptr{CImGui.lib.ImFont}    # Menlo: monospace, box-drawing, symbols
     cjk::Ptr{CImGui.lib.ImFont}        # Hiragino: CJK ideographs, kana
+    emoji::Ptr{CImGui.lib.ImFont}      # Apple Color Emoji: color emoji >U+FFFF
 end
 
+# Cross-platform font discovery. We try well-known absolute font paths
+# covering macOS, Linux and Windows. The lists are ordered by preference;
+# the first file that exists and loads wins. No path is specific to a
+# single user's machine -- every entry is a system font location on at
+# least one OS, so this is portable across the three platforms.
+
 const _MONO_FONT_CANDIDATES = String[
+    # macOS
     "/System/Library/Fonts/Menlo.ttc",
     "/System/Library/Fonts/Monaco.ttf",
     "/System/Library/Fonts/Courier.ttc",
+    # Linux
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
     "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+    # Windows
+    "C:/Windows/Fonts/consola.ttf",
+    "C:/Windows/Fonts/cour.ttf",
 ]
 
 const _CJK_FONT_CANDIDATES = String[
+    # macOS
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
     "/System/Library/Fonts/STHeiti Medium.ttc",
     "/System/Library/Fonts/AppleSDGothicNeo.ttc",
     "/System/Library/Fonts/PingFang.ttc",
+    # Linux
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/droid/DroidSansFallback.ttf",
+    # Windows
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/simsun.ttc",
 ]
 
-# Glyph ranges for the atlas. CImGui.jl only wraps
-# `GetGlyphRangesDefault` (ASCII + Latin-1), so without explicit ranges
-# the CJK fallback font bakes NO ideographs/kana and `AddText` renders
-# nothing for 漢字か / fullwidth / combining-mark cells. These ranges
-# are `ImWchar` (= `UInt16`) arrays, terminated by 0, kept as `const`
-# so they outlive the atlas (ImGui does not copy the pointer).
-#
-# `ImWchar` is 16-bit, so code points above U+FFFF (😀 U+1F600, the ZWJ
-# family 👨‍👩‍👧‍👦 U+1F468.., regional indicators 🇫🇷 U+1F1E6..) CANNOT be
-# baked into the atlas at all; those clusters render as the `□`
-# placeholder chosen by `_paint_buffer!`. BMP symbols that emoji
-# presentation can build on (❤ U+2764, ☝ U+261D) ARE baked so their
-# monochrome base shapes render.
+const _EMOJI_FONT_CANDIDATES = String[
+    # COLRv0 outline color emoji (preferred) -- FreeType auto-rasterizes
+    # COLRv0 to a BGRA bitmap at any pixel size, so ImGui bakes it at 18px
+    # and HarfBuzz.jl can load it (FT_Set_Char_Size succeeds) for ligature
+    # shaping. Twemoji Mozilla (COLRv0) is the reliable cross-platform
+    # choice. Install TwemojiMozillaCOLR.ttf in /Library/Fonts (macOS),
+    # /usr/share/fonts/truetype/twemoji (Linux) or %WINDIR%\Fonts (Windows).
+    "/Library/Fonts/TwemojiMozillaCOLR.ttf",
+    "/Library/Fonts/Twemoji.Mozilla.ttf",
+    "~/Library/Fonts/TwemojiMozillaCOLR.ttf",
+    "~/Library/Fonts/Twemoji.Mozilla.ttf",
+    "~/Library/Fonts/TwemojiCOLR.ttf",
+    "/usr/share/fonts/truetype/twemoji/TwemojiMozillaCOLR.ttf",
+    "/usr/share/fonts/twemoji/TwemojiMozillaCOLR.ttf",
+    "~/.local/share/fonts/TwemojiMozillaCOLR.ttf",
+    "~/.fonts/TwemojiMozillaCOLR.ttf",
+    "C:/Windows/Fonts/TwemojiMozillaCOLR.ttf",
+    # Bitmap-only color emoji (last resort): FT_Set_Pixel_Sizes fails for
+    # bitmap-only fonts and SMP codepoints render empty through ImGui's
+    # FreeType loader, so single-codepoint BMP emoji may render but
+    # 😀/👨‍👩‍👧‍👦/🇫🇷 will not.
+    "/System/Library/Fonts/Apple Color Emoji.ttc",
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "C:/Windows/Fonts/seguisym.ttf",
+]
 
-const _MONO_GLYPH_RANGES = UInt16[
+# Add the first existing/loading font from `paths` to `fonts` with the
+# given glyph `ranges`. Returns the ImFont* or C_NULL.
+function _add_first_font(fonts::Ptr{CImGui.lib.ImFontAtlas},
+                         paths::AbstractVector{String},
+                         ranges::Vector{UInt32})::Ptr{CImGui.lib.ImFont}
+    for path in paths
+        p = expanduser(path)
+        isfile(p) || continue
+        try
+            font = CImGui.AddFontFromFileTTF(fonts, p, 18.0f0, C_NULL,
+                                             pointer(ranges))
+            if font != C_NULL
+                return font
+            end
+        catch e
+            @warn "AddFontFromFileTTF failed" p exception=(e, catch_backtrace())
+        end
+    end
+    return C_NULL
+end
+
+# ImGuiFreeTypeLoaderFlags: LoadColor (1<<8, color-layered glyphs) | Bitmap
+# (1<<9, allow bitmap strikes and FT_SIZE_REQUEST_TYPE_NOMINAL). Apple Color
+# Emoji is a bitmap-only (sbix) font with fixed pixel sizes, so it requires
+# the Bitmap flag or FT_Request_Size/FT_Load_Glyph fail and no emoji bakes.
+const _FT_LOAD_COLOR_FLAG = UInt32((1 << 8) | (1 << 9))
+
+# Glyph ranges for the atlas. With the FreeType-enabled libcimgui these are
+# `ImWchar` (= `UInt32`) arrays, terminated by 0, kept as `const` so they
+# outlive the atlas (ImGui does not copy the pointer). This is what unlocks
+# code points above U+FFFF: the stb/ImWchar16 build could not represent them
+# at all, so 😀 (U+1F600), the ZWJ family 👨‍👩‍👧‍👦 and regional indicators 🇫🇷
+# were unbakeable; with ImWchar32 + the FreeType loader + LoadColor they are
+# rasterized in color from Apple Color Emoji / Noto Color Emoji.
+
+const _MONO_GLYPH_RANGES = UInt32[
     0x0020, 0x00FF,  # Basic Latin + Latin-1 Supplement (the default)
     0x0100, 0x024F,  # Latin Extended-A/B
     0x0300, 0x036F,  # Combining Diacritical Marks (e + U+0301)
@@ -90,12 +155,12 @@ const _MONO_GLYPH_RANGES = UInt16[
     0x2190, 0x21FF,  # Arrows
     0x2500, 0x257F,  # Box Drawing
     0x2580, 0x259F,  # Block Elements
-    0x25A0, 0x25FF,  # Geometric Shapes
+    0x25A0, 0x25FF,  # Geometric Shapes (□ placeholder)
     0x2600, 0x26FF,  # Miscellaneous Symbols
     0,
 ]
 
-const _CJK_GLYPH_RANGES = UInt16[
+const _CJK_GLYPH_RANGES = UInt32[
     0x3000, 0x303F,  # CJK Symbols and Punctuation
     0x3040, 0x309F,  # Hiragana (か)
     0x30A0, 0x30FF,  # Katakana
@@ -108,39 +173,52 @@ const _CJK_GLYPH_RANGES = UInt16[
     0,
 ]
 
-function _load_fonts!(ctx)::Pair{Ptr{CImGui.lib.ImFont}, Ptr{CImGui.lib.ImFont}}
+const _EMOJI_GLYPH_RANGES = UInt32[
+    0x1F1E6, 0x1F1FF,  # Regional Indicator Symbols (🇫🇷 flag ligatures)
+    0x1F300, 0x1F5FF,  # Miscellaneous Symbols and Pictographs
+    0x1F600, 0x1F64F,  # Emoticons (😀)
+    0x1F680, 0x1F6FF,  # Transport and Map Symbols
+    0x1F700, 0x1F77F,  # Alchemical Symbols
+    0x1F780, 0x1F7FF,  # Geometric Shapes Extended
+    0x1F800, 0x1F8FF,  # Supplemental Arrows-C
+    0x1F900, 0x1F9FF,  # Supplemental Symbols and Pictographs
+    0x1FA70, 0x1FAFF,  # Symbols and Pictographs Extended-A
+    0x1FB00, 0x1FBFF,  # Legacy Computing Symbols
+    0x2600, 0x27BF,    # Misc Symbols + Dingbats (❤️, ☝️ color variants)
+    0xFE0F, 0xFE0F,    # Variation Selector-16 (emoji presentation)
+    0x200D, 0x200D,    # Zero-Width Joiner (👨‍👩‍👧‍👦 sequences)
+    0,
+]
+
+# Set `atlas->FontLoaderFlags`. ImFontAtlas has no ImWchar-typed field, so its
+# layout is identical between the stb/ImWchar16 and FreeType/ImWchar32 builds;
+# the offset (720 on this build) is valid for both. We set it directly rather
+# than via a wrapper accessor to avoid depending on the generated struct
+# reflection. This must run BEFORE the first font is added / the atlas Build.
+function _set_atlas_font_loader_flags!(fonts::Ptr{CImGui.lib.ImFontAtlas},
+                                       flags::UInt32)
+    # ImFontAtlas.FontLoaderFlags is at offset 720 in this CImGui.jl build
+    # (see lib/aarch64-apple-darwin20.jl getproperty for Ptr{ImFontAtlas}).
+    unsafe_store!(Ptr{Cuint}(Ptr{Cvoid}(fonts) + 720), flags)
+    return nothing
+end
+
+function _load_fonts!(ctx)::Tuple{Ptr{CImGui.lib.ImFont}, Ptr{CImGui.lib.ImFont}, Ptr{CImGui.lib.ImFont}}
     io = CImGui.GetIO()
     fonts = unsafe_load(getproperty(io, :Fonts))
 
-    primary = C_NULL
-    for path in _MONO_FONT_CANDIDATES
-        isfile(path) || continue
-        try
-            font = CImGui.AddFontFromFileTTF(fonts, path, 18.0f0, C_NULL,
-                                             pointer(_MONO_GLYPH_RANGES))
-            if font != C_NULL
-                primary = font
-                break
-            end
-        catch
-        end
-    end
+    # Enable color emoji rasterization for the whole atlas. The FreeType
+    # loader is auto-selected at Build time because libcimgui was compiled
+    # with IMGUI_ENABLE_FREETYPE. LoadColor only affects fonts that actually
+    # have color layers (COLR/sbix); monochrome fonts render as usual.
+    # The Bitmap flag allows bitmap-only strikes (Apple Color Emoji sbix).
+    _set_atlas_font_loader_flags!(fonts, _FT_LOAD_COLOR_FLAG)
 
-    cjk = C_NULL
-    for path in _CJK_FONT_CANDIDATES
-        isfile(path) || continue
-        try
-            font = CImGui.AddFontFromFileTTF(fonts, path, 18.0f0, C_NULL,
-                                             pointer(_CJK_GLYPH_RANGES))
-            if font != C_NULL
-                cjk = font
-                break
-            end
-        catch
-        end
-    end
+    primary = _add_first_font(fonts, _MONO_FONT_CANDIDATES, _MONO_GLYPH_RANGES)
+    cjk = _add_first_font(fonts, _CJK_FONT_CANDIDATES, _CJK_GLYPH_RANGES)
+    emoji = _add_first_font(fonts, _EMOJI_FONT_CANDIDATES, _EMOJI_GLYPH_RANGES)
 
-    return primary => cjk
+    return (primary, cjk, emoji)
 end
 
 function _draw_widget(w::ManyUI.Label)
@@ -554,12 +632,14 @@ mutable struct _TuiRenderState
     last_mouse_cell::Union{Nothing,Tuple{Int,Int}}
     font::Ptr{CImGui.lib.ImFont}       # primary (monospace)
     cjk_font::Ptr{CImGui.lib.ImFont}   # CJK fallback (Hiragino)
+    emoji_font::Ptr{CImGui.lib.ImFont} # color emoji fallback (Apple Color Emoji)
     # HarfBuzz fonts for text-shaping-based coverage checks. Shaping
     # the whole grapheme cluster (via _hb_full_coverage) is more
     # correct than single-codepoint has_glyph / IsGlyphInFont: it
     # catches missing combining marks and honors GSUB ligatures.
     hb_primary::Union{Nothing,HarfBuzz.HbFont}
     hb_cjk::Union{Nothing,HarfBuzz.HbFont}
+    hb_emoji::Union{Nothing,HarfBuzz.HbFont}
 end
 
 # Convert ImGui mouse coordinates (screen-space) to a 1-based ManyUI
@@ -772,6 +852,33 @@ function _hb_full_coverage(hb_font::HarfBuzz.HbFont,
     return all(g.glyph_id != UInt32(0) for g in result.infos)
 end
 
+# Remove Unicode variation selectors (U+FE00..U+FE0F) from a string. Used
+# before AddText on the emoji font: VS16 selects emoji presentation but is
+# not itself drawable, and many emoji fonts lack the codepoint so it would
+# render as the fallback box (trailing □ in ❤️ / ☝️).
+function _strip_variation_selectors(s::AbstractString)::String
+    return String([ch for ch in s if !(0xFE00 <= UInt32(ch) <= 0xFE0F)])
+end
+
+# Does this cluster require GSUB shaping to render as a single glyph?
+# - ZWJ sequences (U+200D): 👨‍👩‍👧‍👦 family, kiss, etc.
+# - Regional-indicator pairs (U+1F1E6..U+1F1FF): 🇫🇷 flags.
+# ImGui's codepoint-by-codepoint RenderText renders these as components;
+# ImGuiFreeType::RenderShapedText shapes them into the ligature glyph.
+function _is_ligature_cluster(s::AbstractString)::Bool
+    has_zwj = false
+    n_ri = 0
+    for ch in s
+        cp = UInt32(ch)
+        if cp == 0x200D
+            has_zwj = true
+        elseif 0x1F1E6 <= cp <= 0x1F1FF
+            n_ri += 1
+        end
+    end
+    return has_zwj || n_ri >= 2
+end
+
 # Paint `app.back` (the Buffer the App loop just filled) into the ImGui
 # window using ImDrawList. One AddRectFilled per cell with a non-default
 # background, one AddText per cell with content.
@@ -828,37 +935,106 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
             # lacks a combining mark, and accepts a font whose GSUB
             # table forms a ligature from several codepoints. Falls
             # back to single-codepoint has_glyph / IsGlyphInFont when
-            # HarfBuzz fonts are not loaded. For glyphs missing from
-            # BOTH fonts (color emoji), substitute a visible
+            # HarfBuzz fonts are not loaded. Tries the primary mono
+            # font, then the CJK fallback, then the color emoji
+            # fallback; if none cover the cluster, substitute a visible
             # placeholder.
             use_font = font
-            draw_content = content
+            # Variation selectors (U+FE00..U+FE0F) select emoji/text
+            # presentation but are not themselves drawable, and most
+            # emoji fonts (Twemoji COLRv0) lack the codepoint. Keep them
+            # OUT of both the coverage check and the rendered string:
+            # otherwise _hb_full_coverage("❤️") returns false (VS16 ->
+            # .notdef) and the whole cluster routes to the □ placeholder.
+            # Stripping VS16 makes "❤️" route to the emoji font and render
+            # as the color heart. (The cell width is already 2 from
+            # ManyUI's grapheme_width, so the slot stays 2 cells wide.)
+            draw_content = _strip_variation_selectors(content)
+            # VS16 (U+FE0F) is the EMOJI PRESENTATION selector: the user
+            # explicitly asked for the emoji rendering of the base
+            # codepoint (e.g. ❤️ vs ❤). When present, prefer the color
+            # emoji font over the primary mono font even if the primary
+            # has the base codepoint as a monochrome outline (Menlo has
+            # U+2764), otherwise ❤️ renders monochrome instead of color.
+            want_emoji_presentation = any(c -> UInt32(c) == 0xFE0F, content)
             if cell.width >= 2
-                first_cp = UInt32(first(content))
+                first_cp = UInt32(first(draw_content))
                 in_primary = if st.hb_primary !== nothing
-                    _hb_full_coverage(st.hb_primary, content)
+                    _hb_full_coverage(st.hb_primary, draw_content)
                 else
                     first_cp <= 0xFFFF &&
-                        CImGui.IsGlyphInFont(font, UInt16(first_cp))
+                        CImGui.IsGlyphInFont(font, UInt32(first_cp))
                 end
                 in_cjk = if st.hb_cjk !== nothing && st.cjk_font != C_NULL
-                    _hb_full_coverage(st.hb_cjk, content)
+                    _hb_full_coverage(st.hb_cjk, draw_content)
                 else
                     st.cjk_font != C_NULL && first_cp <= 0xFFFF &&
-                        CImGui.IsGlyphInFont(st.cjk_font, UInt16(first_cp))
+                        CImGui.IsGlyphInFont(st.cjk_font, UInt32(first_cp))
                 end
-                if !in_primary && in_cjk && st.cjk_font != C_NULL
+                # Emoji coverage: prefer HarfBuzz shaping when the emoji
+                # font is scalable (HarfBuzz.HbFont loads it via
+                # FT_Set_Char_Size, which fails for bitmap-only fonts like
+                # Apple Color Emoji sbix). Fall back to single-codepoint
+                # IsGlyphInFont on the atlas emoji font, which checks the
+                # TTF cmap via FreeType and works for bitmap-only fonts.
+                # Single-codepoint is sufficient for routing: 👨‍👩‍👧‍👦 and 🇫🇷
+                # are ligature sequences whose FIRST codepoint (U+1F468 /
+                # U+1F1EB) is present in the emoji font, so the cell routes
+                # to the emoji font; AddText then renders the components
+                # (ImGui does not GSUB-shape, so ZWJ families render as
+                # their parts and regional indicators as two letters --
+                # a known limitation).
+                in_emoji = if st.emoji_font != C_NULL
+                    if st.hb_emoji !== nothing
+                        _hb_full_coverage(st.hb_emoji, draw_content)
+                    else
+                        CImGui.IsGlyphInFont(st.emoji_font, first_cp)
+                    end
+                else
+                    false
+                end
+                if want_emoji_presentation && in_emoji &&
+                        st.emoji_font != C_NULL
+                    # VS16: force the color emoji font.
+                    use_font = st.emoji_font
+                elseif !in_primary && in_cjk && st.cjk_font != C_NULL
                     use_font = st.cjk_font
-                elseif !in_primary && !in_cjk
+                elseif !in_primary && !in_cjk && in_emoji &&
+                        st.emoji_font != C_NULL
+                    use_font = st.emoji_font
+                elseif !in_primary && !in_cjk && !in_emoji
                     draw_content = "□"
                 end
             end
 
             if cell.width == 2
                 span_w = 2 * cw
-                CImGui.AddText(dl, use_font, font_size,
-                    (px, row_y), fg_col, draw_content, C_NULL,
-                    span_w)
+                # Ligature clusters (ZWJ families 👨‍👩‍👧‍👦, regional-indicator
+                # flags 🇫🇷) routed to the color emoji font must be SHAPED
+                # with HarfBuzz to form the single ligature glyph; ImGui's
+                # AddText is codepoint-by-codepoint and would render the
+                # components. ImGuiFreeType::RenderShapedText bakes the
+                # ligature glyph by FT index on demand. Falls back to
+                # AddText for single-codepoint emoji (😀 ❤ ☝) which AddText
+                # already handles.
+                if use_font === st.emoji_font && _is_ligature_cluster(draw_content) &&
+                        isdefined(CImGui, :HasShaping) && isdefined(CImGui, :RenderShapedText) &&
+                        CImGui.HasShaping()
+                    baked = CImGui.GetFontBaked(st.emoji_font, font_size)
+                    if baked != C_NULL
+                        clip = CImGui.lib.ImVec4(px, row_y, px + span_w, row_y + ch)
+                        pos = CImGui.lib.ImVec2(px, row_y)
+                        CImGui.RenderShapedText(dl, st.emoji_font, baked,
+                                               font_size, pos, fg_col, clip,
+                                               draw_content)
+                    else
+                        CImGui.AddText(dl, use_font, font_size,
+                            (px, row_y), fg_col, draw_content, C_NULL, span_w)
+                    end
+                else
+                    CImGui.AddText(dl, use_font, font_size,
+                        (px, row_y), fg_col, draw_content, C_NULL, span_w)
+                end
             else
                 CImGui.AddText(dl, use_font, font_size,
                     (px, row_y), fg_col, draw_content)
@@ -893,18 +1069,26 @@ end
 # `frame!` to paint `app.back`, then rasterizes the buffer.
 function _tui_draw(st::_TuiRenderState)::Nothing
     # Resolve fonts from the current ImGui context. The primary font
-    # (index 0) is the monospace; font index 1 is the CJK fallback.
+    # (index 0) is the monospace; index 1 is the CJK fallback; index 2 is
+    # the color emoji fallback. _load_fonts! adds them in that order.
     io = CImGui.GetIO()
     fonts = unsafe_load(getproperty(io, :Fonts))
     st.font = CImGui.GetFont()
-    # Get the CJK font (second font in the atlas, if loaded)
-    if st.cjk_font == C_NULL
-        # Try to retrieve it from the atlas's Fonts vector
+    # Retrieve fallback fonts from the atlas's Fonts vector by index.
+    # ImFontAtlas.Fonts is an `ImVector<ImFont*>` stored by value at
+    # offset 104; we load the vector struct (Size, Capacity, Data) and
+    # index into its Data array of `ImFont*` pointers.
+    if st.cjk_font == C_NULL || st.emoji_font == C_NULL
         try
-            fonts_vec = unsafe_load(getproperty(fonts, :Fonts))
-            n = unsafe_load(getproperty(fonts, :Size))
-            if n >= 2
-                st.cjk_font = unsafe_load(fonts_vec + sizeof(Ptr{Cvoid}))
+            fv = unsafe_load(getproperty(fonts, :Fonts))
+            n = fv.Size
+            data = fv.Data
+            ptrsz = sizeof(Ptr{Cvoid})
+            if n >= 2 && st.cjk_font == C_NULL
+                st.cjk_font = unsafe_load(data + ptrsz)
+            end
+            if n >= 3 && st.emoji_font == C_NULL
+                st.emoji_font = unsafe_load(data + 2 * ptrsz)
             end
         catch
         end
@@ -941,6 +1125,22 @@ function _tui_draw(st::_TuiRenderState)::Nothing
                 end
             end
         catch
+        end
+    end
+    # HarfBuzz emoji font for coverage checks on >U+FFFF clusters. Try
+    # the same candidate paths as the atlas (a COLRv0 outline font like
+    # Twemoji loads via FT_Set_Char_Size; bitmap-only Apple Color Emoji
+    # fails and is skipped, which is fine -- atlas IsGlyphInFont is the
+    # fallback in _paint_buffer!).
+    if st.hb_emoji === nothing
+        for path in _EMOJI_FONT_CANDIDATES
+            p = expanduser(path)
+            isfile(p) || continue
+            try
+                st.hb_emoji = HarfBuzz.HbFont(p, 18; index = 0)
+                break
+            catch
+            end
         end
     end
 
@@ -1040,7 +1240,7 @@ function ManyUICImGui.launch_tui(factory::Function;
                         config = config, stylesheet = stylesheet)
 
     st = _TuiRenderState(app, driver, 8.0f0, 16.0f0, 0.0f0, 0.0f0,
-                         nothing, C_NULL, C_NULL, nothing, nothing)
+                         nothing, C_NULL, C_NULL, C_NULL, nothing, nothing, nothing)
     draw = _tui_render_callback(st, app, Int(width), Int(height),
                                 String(title))
 
@@ -1082,7 +1282,7 @@ function ManyUICImGui.launch_tui_app!(app::ManyUITUI.App;
                             "ImGuiTUIDriver; got $(typeof(driver))"))
 
     st = _TuiRenderState(app, driver, 8.0f0, 16.0f0, 0.0f0, 0.0f0,
-                         nothing, C_NULL, C_NULL, nothing, nothing)
+                         nothing, C_NULL, C_NULL, C_NULL, nothing, nothing, nothing)
     draw = _tui_render_callback(st, app, Int(width), Int(height),
                                 String(title))
 
