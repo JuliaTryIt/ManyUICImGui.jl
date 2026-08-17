@@ -110,6 +110,18 @@ const _EMOJI_FONT_CANDIDATES = String[
     "C:/Windows/Fonts/seguisym.ttf",
 ]
 
+# Return the first existing path from `paths` (after `expanduser`), or
+# `nothing`. Used to resolve a HarfBuzz `Font` from the same candidate list
+# the atlas `_add_first_font` walks, so the HarfBuzz coverage font matches
+# the atlas font (HarfBuzz.jl dropped family-name resolution).
+function _first_existing_path(paths::AbstractVector{String})::Union{Nothing,String}
+    for path in paths
+        p = expanduser(path)
+        isfile(p) && return p
+    end
+    return nothing
+end
+
 # Add the first existing/loading font from `paths` to `fonts` with the
 # given glyph `ranges`. Returns the ImFont* or C_NULL.
 function _add_first_font(fonts::Ptr{CImGui.lib.ImFontAtlas},
@@ -637,9 +649,9 @@ mutable struct _TuiRenderState
     # the whole grapheme cluster (via _hb_full_coverage) is more
     # correct than single-codepoint has_glyph / IsGlyphInFont: it
     # catches missing combining marks and honors GSUB ligatures.
-    hb_primary::Union{Nothing,HarfBuzz.HbFont}
-    hb_cjk::Union{Nothing,HarfBuzz.HbFont}
-    hb_emoji::Union{Nothing,HarfBuzz.HbFont}
+    hb_primary::Union{Nothing,HarfBuzz.Font}
+    hb_cjk::Union{Nothing,HarfBuzz.Font}
+    hb_emoji::Union{Nothing,HarfBuzz.Font}
 end
 
 # Convert ImGui mouse coordinates (screen-space) to a 1-based ManyUI
@@ -844,7 +856,7 @@ end
 # per call; it is only invoked for `cell.width >= 2` cells (CJK /
 # emoji), which are a small fraction of a typical TUI frame, so the
 # per-frame cost is bounded.
-function _hb_full_coverage(hb_font::HarfBuzz.HbFont,
+function _hb_full_coverage(hb_font::HarfBuzz.Font,
                            text::AbstractString)::Bool
     isempty(text) && return true
     result = HarfBuzz.shape(hb_font, text)
@@ -971,10 +983,9 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
                     st.cjk_font != C_NULL && first_cp <= 0xFFFF &&
                         CImGui.IsGlyphInFont(st.cjk_font, UInt32(first_cp))
                 end
-                # Emoji coverage: prefer HarfBuzz shaping when the emoji
-                # font is scalable (HarfBuzz.HbFont loads it via
-                # FT_Set_Char_Size, which fails for bitmap-only fonts like
-                # Apple Color Emoji sbix). Fall back to single-codepoint
+                # Emoji coverage: prefer HarfBuzz shaping when an emoji
+                # HarfBuzz.Font is loaded (the :ot funcs, no FreeType, so
+                # even bitmap-only fonts load). Fall back to single-codepoint
                 # IsGlyphInFont on the atlas emoji font, which checks the
                 # TTF cmap via FreeType and works for bitmap-only fonts.
                 # Single-codepoint is sufficient for routing: 👨‍👩‍👧‍👦 and 🇫🇷
@@ -983,7 +994,8 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
                 # to the emoji font; AddText then renders the components
                 # (ImGui does not GSUB-shape, so ZWJ families render as
                 # their parts and regional indicators as two letters --
-                # a known limitation).
+                # a known limitation, lifted when HasShaping() enables
+                # RenderShapedText).
                 in_emoji = if st.emoji_font != C_NULL
                     if st.hb_emoji !== nothing
                         _hb_full_coverage(st.hb_emoji, draw_content)
@@ -1100,31 +1112,22 @@ function _tui_draw(st::_TuiRenderState)::Nothing
     # These fonts feed `_hb_full_coverage`, which shapes a cell's
     # whole grapheme cluster to decide whether the primary or CJK
     # font fully covers it.
+    #
+    # HarfBuzz.jl dropped family-name resolution, so we resolve a font
+    # FILE PATH (the first existing candidate -- the same list the atlas
+    # `_add_first_font` walks, so the HarfBuzz font matches the atlas
+    # font). `HarfBuzz.Font(path; size)` uses the :ot funcs (no FreeType),
+    # so bitmap-only fonts (Apple Color Emoji) load too.
     if st.hb_primary === nothing
-        try
-            for name in ["Menlo", "DejaVu Sans Mono", "Consolas",
-                         "Liberation Mono", "Courier New", "Monaco"]
-                try
-                    st.hb_primary = HarfBuzz.HbFont(name, 18)
-                    break
-                catch
-                end
-            end
-        catch
+        p = _first_existing_path(_MONO_FONT_CANDIDATES)
+        if p !== nothing
+            try; st.hb_primary = HarfBuzz.Font(p; size = 18); catch; end
         end
     end
     if st.hb_cjk === nothing
-        try
-            for name in ["Hiragino Sans GB", "Noto Sans CJK SC",
-                         "Noto Sans CJK", "Microsoft YaHei",
-                         "SimSun", "AppleSDGothicNeo", "Malgun Gothic"]
-                try
-                    st.hb_cjk = HarfBuzz.HbFont(name, 18)
-                    break
-                catch
-                end
-            end
-        catch
+        p = _first_existing_path(_CJK_FONT_CANDIDATES)
+        if p !== nothing
+            try; st.hb_cjk = HarfBuzz.Font(p; size = 18); catch; end
         end
     end
     # HarfBuzz emoji font for coverage checks on >U+FFFF clusters. Try
@@ -1137,7 +1140,7 @@ function _tui_draw(st::_TuiRenderState)::Nothing
             p = expanduser(path)
             isfile(p) || continue
             try
-                st.hb_emoji = HarfBuzz.HbFont(p, 18; index = 0)
+                st.hb_emoji = HarfBuzz.Font(p; size = 18, index = 0)
                 break
             catch
             end

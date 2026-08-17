@@ -10,7 +10,7 @@ ManyUITUI = "5c52c6f3-12e3-46fb-a0b2-3b2e56cfefb8"
 [sources]
 ManyUI = {url = "https://github.com/s-celles/ManyUI.jl.git"}
 ManyUITUI = {url = "https://github.com/s-celles/ManyUITUI.jl.git"}
-HarfBuzz = {path = "../HarfBuzz.jl"}
+HarfBuzz = {url = "https://github.com/s-celles/HarfBuzz.jl"}
 
 [compat]
 Aqua = "0.8"
