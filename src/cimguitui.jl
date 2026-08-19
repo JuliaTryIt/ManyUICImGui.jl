@@ -178,6 +178,98 @@ function launch_tui_app! end
 const _TUI_NATIVE_AVAILABLE = Ref(false)
 tui_native_available()::Bool = _TUI_NATIVE_AVAILABLE[]
 
+"""
+    _tui_exit_signal(app_running, window_open) -> Union{Nothing,Symbol}
+
+What the ImGui draw callback must RETURN this frame: `nothing` to keep
+rendering, `:imgui_exit_loop` to end the render loop.
+
+CImGui's render loop stops on two things only -- the OS window's close
+button, and this symbol. An `App` that stopped on its own (`quit!`, a
+demo's exit key, the hub's Launch button) is neither, so the callback
+has to say so. Without this the window stayed up painting a dead App
+and every click looked like it did nothing.
+
+Lives here, in `src`, rather than in the extension: it is the whole
+decision, and here it is testable without a GPU.
+"""
+_tui_exit_signal(app_running::Bool, window_open::Bool)::Union{Nothing,Symbol} =
+    (app_running && window_open) ? nothing : :imgui_exit_loop
+
+"""
+    _is_ligature_cluster(s) -> Bool
+
+True when `s` is a sequence that a font's GSUB table joins into ONE
+glyph: an emoji ZWJ sequence (👨‍👩‍👧‍👦), or a pair of regional indicators
+(🇫🇷). Drawing those codepoint-by-codepoint gives four separate faces
+and the letters F R -- which is exactly what an unshaped path does.
+
+A LONE emoji is not one: it is a single codepoint with nothing to join,
+and the ordinary text path already draws it correctly.
+"""
+function _is_ligature_cluster(s::AbstractString)::Bool
+    has_zwj = false
+    n_ri = 0
+    for ch in s
+        cp = UInt32(ch)
+        if cp == 0x200D
+            has_zwj = true
+        elseif 0x1F1E6 <= cp <= 0x1F1FF
+            n_ri += 1
+        end
+    end
+    return has_zwj || n_ri >= 2
+end
+
+"""
+    _needs_shaping(s) -> Bool
+
+True when `s` contains at least one ligature cluster, i.e. when drawing
+it with an unshaped text call would be visibly wrong.
+
+The shaped path is more expensive and more intrusive than a plain text
+call, so it is taken only for the text that needs it.
+"""
+function _needs_shaping(s::AbstractString)::Bool
+    for g in graphemes(s)
+        _is_ligature_cluster(String(g)) && return true
+    end
+    return false
+end
+
+"""
+    _split_ligature_pieces(s) -> Vector{Tuple{Bool,String}}
+
+Cut `s` into consecutive pieces, each flagged `true` when it is a single
+ligature cluster to be SHAPED and `false` when it is ordinary text the
+normal text call can draw. Concatenating the pieces reproduces `s`.
+
+The native widget path draws a whole run with one `TextUnformatted`,
+which has no shaping; this is what lets it hand just the clusters to
+the shaping call and keep everything else on the fast path. Splitting
+on grapheme clusters (UAX #29) is what makes a ZWJ family one piece
+rather than seven codepoints.
+"""
+function _split_ligature_pieces(s::AbstractString)::Vector{Tuple{Bool,String}}
+    pieces = Tuple{Bool,String}[]
+    buf = IOBuffer()
+    flush_buf!() = begin
+        t = String(take!(buf))
+        isempty(t) || push!(pieces, (false, t))
+    end
+    for g in graphemes(s)
+        gs = String(g)
+        if _is_ligature_cluster(gs)
+            flush_buf!()
+            push!(pieces, (true, gs))
+        else
+            print(buf, gs)
+        end
+    end
+    flush_buf!()
+    return pieces
+end
+
 function launch_tui(factory; kwargs...)
     throw(ArgumentError("ManyUICImGui.launch_tui requires the optional " *
                         "CImGui, GLFW, HarfBuzz and ModernGL dependencies"))

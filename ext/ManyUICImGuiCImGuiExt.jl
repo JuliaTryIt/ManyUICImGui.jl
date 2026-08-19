@@ -11,6 +11,36 @@ import HarfBuzz
 function __init__()
     ManyUICImGui._NATIVE_AVAILABLE[] = true
     ManyUICImGui._TUI_NATIVE_AVAILABLE[] = true
+    ManyUICImGui._CLOSE_REQUESTER[] = _request_close!
+end
+
+"""
+True when the loaded `libcimgui` was built with `IMGUI_ENABLE_FREETYPE`.
+
+Everything colour or bitmap in a font depends on this, and it is NOT a
+given: CImGuiPack_jll 0.12.2 ships a plain stb_truetype build, whose
+rasteriser cannot see COLR layers or sbix/CBDT bitmap strikes. On that
+binary colour emoji are unreachable no matter which font is installed.
+
+Detected by SYMBOL rather than by jll version, since a later jll may
+flip either way: `ImGuiFreeType_GetFontLoader` is bound in CImGui.jl's
+generated wrapper but exported only by a FreeType build, so the `ccall`
+fails to resolve on a stb one. Resolved ONCE and cached -- the answer
+cannot change while the library is loaded.
+"""
+const _HAS_FREETYPE = Ref{Union{Nothing,Bool}}(nothing)
+
+function _has_freetype()::Bool
+    v = _HAS_FREETYPE[]
+    v === nothing || return v
+    ok = try
+        CImGui.lib.ImGuiFreeType_GetFontLoader() != C_NULL
+    catch
+        # "could not load symbol" on a build without FreeType.
+        false
+    end
+    _HAS_FREETYPE[] = ok
+    return ok
 end
 
 """
@@ -24,16 +54,19 @@ function ManyUICImGui.launch_imgui(ui::Function;
                                    width::Integer=1280,
                                    height::Integer=720,
                                    title::AbstractString="ManyUI",
-                                   wait::Bool=true)
+                                   wait::Bool=true,
+                                   merge_fallbacks::Bool=false)
     width > 0 || throw(ArgumentError("width must be positive"))
     height > 0 || throw(ArgumentError("height must be positive"))
     CImGui.set_backend(:GlfwOpenGL3)
     ctx = CImGui.CreateContext()
 
     # Load fonts: a monospace primary (Menlo) for ASCII/box-drawing, and
-    # a CJK fallback (Hiragino Sans GB) for 漢字か. Per-cell font
-    # selection is done in _paint_buffer!.
-    _fonts = _load_fonts!(ctx)
+    # a CJK fallback (Hiragino Sans GB) for 漢字か. `merge_fallbacks`
+    # says whether the caller selects a font per glyph itself (the TUI
+    # path, `_paint_buffer!`) or needs one font that covers everything
+    # (the native widget path). See `_load_fonts!`.
+    _fonts = _load_fonts!(ctx; merge_fallbacks = merge_fallbacks)
 
     spawn = wait ? false : 1
     CImGui.render(ui, ctx; window_size=(Int(width), Int(height)),
@@ -70,6 +103,26 @@ const _MONO_FONT_CANDIDATES = String[
     "C:/Windows/Fonts/cour.ttf",
 ]
 
+# Monochrome SYMBOL coverage: the parts of the BMP a monospace face
+# tends not to carry. Braille Patterns above all -- `Spinner`'s default
+# frames are ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ and Menlo has no Braille, so the one glyph on
+# screen that is supposed to be animating was a tofu box.
+#
+# These are ordinary outline glyphs, so they bake through the plain
+# stb_truetype loader; unlike the emoji list below, this one does not
+# depend on a FreeType-enabled libcimgui.
+const _SYMBOL_FONT_CANDIDATES = String[
+    # macOS
+    "/System/Library/Fonts/Apple Symbols.ttf",
+    # Linux -- DejaVu Sans and Noto Symbols2 both carry U+2800..U+28FF.
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
+    # Windows -- Segoe UI Symbol.
+    "C:/Windows/Fonts/seguisym.ttf",
+]
+
 const _CJK_FONT_CANDIDATES = String[
     # macOS
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
@@ -84,6 +137,21 @@ const _CJK_FONT_CANDIDATES = String[
     "C:/Windows/Fonts/simsun.ttc",
 ]
 
+# COLOR EMOJI NEEDS A FREETYPE-ENABLED libcimgui, AND CImGuiPack_jll
+# 0.12.2 IS NOT ONE. Every path below assumes the FreeType loader; on a
+# stb_truetype build none of them can produce a glyph, because the art
+# in a COLR font lives in layers stb cannot see and the art in an sbix /
+# CBDT font is a bitmap stb cannot read. The shipped binary answers
+# plainly when asked -- it carries ImGui's own
+#
+#     "Requires #define IMGUI_ENABLE_FREETYPE + imgui_freetype.cpp."
+#
+# and exports no FreeType symbol at all. `native_emoji_available()`
+# below is the runtime form of that check.
+#
+# So on the current binary emoji draw as tofu boxes and no font choice
+# changes it. The list is kept in preference order for the build that
+# does have FreeType. See upstream-bugs.md.
 const _EMOJI_FONT_CANDIDATES = String[
     # COLRv0 outline color emoji (preferred) -- FreeType auto-rasterizes
     # COLRv0 to a BGRA bitmap at any pixel size, so ImGui bakes it at 18px
@@ -143,6 +211,44 @@ function _add_first_font(fonts::Ptr{CImGui.lib.ImFontAtlas},
     return C_NULL
 end
 
+# Same walk as `_add_first_font`, but MERGES the winner into the font
+# added just before it instead of adding a separate one.
+#
+# The two callers need opposite things from the atlas, which is why
+# both exist. The TUI painter draws one grapheme at a time and CHOOSES
+# a font per cell (`use_font` in `_paint_buffer!`), so it needs the
+# three fonts kept apart and reachable as `atlas->Fonts[0..2]`. The
+# native widget path has no such loop: it hands whole strings to
+# `TextUnformatted` / `InputTextMultiline`, which render in ONE font
+# and, finding no glyph, drew 漢字 and 👨‍👩‍👧‍👦 as tofu boxes even though
+# the atlas held a CJK and an emoji font all along. Merging is how Dear
+# ImGui does fallback for that case: one ImFont, several sources, its
+# own lookup picking the source that has the glyph.
+function _merge_first_font(fonts::Ptr{CImGui.lib.ImFontAtlas},
+                           paths::AbstractVector{String},
+                           ranges::Vector{UInt32})::Bool
+    for path in paths
+        p = expanduser(path)
+        isfile(p) || continue
+        # ImGui copies the config into `atlas->Sources`, so it may be
+        # freed as soon as the font is added.
+        cfg = CImGui.lib.ImFontConfig()
+        cfg == C_NULL && continue
+        try
+            unsafe_store!(getproperty(cfg, :MergeMode), true)
+            if CImGui.AddFontFromFileTTF(fonts, p, 18.0f0, cfg,
+                                         pointer(ranges)) != C_NULL
+                return true
+            end
+        catch e
+            @warn "AddFontFromFileTTF (merge) failed" p exception=(e, catch_backtrace())
+        finally
+            CImGui.lib.ImFontConfig_destroy(cfg)
+        end
+    end
+    return false
+end
+
 # ImGuiFreeTypeLoaderFlags: LoadColor (1<<8, color-layered glyphs) | Bitmap
 # (1<<9, allow bitmap strikes and FT_SIZE_REQUEST_TYPE_NOMINAL). Apple Color
 # Emoji is a bitmap-only (sbix) font with fixed pixel sizes, so it requires
@@ -169,6 +275,21 @@ const _MONO_GLYPH_RANGES = UInt32[
     0x2580, 0x259F,  # Block Elements
     0x25A0, 0x25FF,  # Geometric Shapes (□ placeholder)
     0x2600, 0x26FF,  # Miscellaneous Symbols
+    # Braille Patterns. Not decoration: `Spinner`'s DEFAULT frames are
+    # ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏, so leaving this range out drew a tofu box wherever a
+    # demo showed a spinner -- the one glyph on screen that is supposed
+    # to be moving.
+    0x2800, 0x28FF,
+    0,
+]
+
+# What the symbol fallback is asked to supply -- only what a monospace
+# face is actually likely to be missing, so it never displaces the
+# primary for text.
+const _SYMBOL_GLYPH_RANGES = UInt32[
+    0x2800, 0x28FF,  # Braille Patterns (Spinner)
+    0x2190, 0x21FF,  # Arrows
+    0x2500, 0x25FF,  # Box Drawing + Block Elements + Geometric Shapes
     0,
 ]
 
@@ -215,31 +336,277 @@ function _set_atlas_font_loader_flags!(fonts::Ptr{CImGui.lib.ImFontAtlas},
     return nothing
 end
 
-function _load_fonts!(ctx)::Tuple{Ptr{CImGui.lib.ImFont}, Ptr{CImGui.lib.ImFont}, Ptr{CImGui.lib.ImFont}}
+"""
+Build the atlas: a monospace primary, plus a CJK and a color-emoji
+fallback.
+
+`merge_fallbacks` picks WHICH SHAPE the fallbacks take, and the two
+launch paths want opposite ones:
+
+  * `false` (the TUI path) leaves three separate fonts, in this order,
+    reachable as `atlas->Fonts[0..2]`. `_paint_buffer!` reads them back
+    by index and chooses one per grapheme.
+  * `true` (the native widget path) merges both fallbacks INTO the
+    primary, leaving a single font that covers every range. Nothing on
+    that path selects a font per glyph -- whole strings go to
+    `TextUnformatted` and friends -- so without merging the fallbacks
+    sat in the atlas unreachable and CJK and emoji drew as tofu.
+
+Returns the same triple either way; under `merge_fallbacks` all three
+elements are the one merged font, which is the honest answer to "which
+font covers CJK here".
+"""
+function _load_fonts!(ctx; merge_fallbacks::Bool = false)::Tuple{Ptr{CImGui.lib.ImFont}, Ptr{CImGui.lib.ImFont}, Ptr{CImGui.lib.ImFont}}
     io = CImGui.GetIO()
     fonts = unsafe_load(getproperty(io, :Fonts))
 
-    # Enable color emoji rasterization for the whole atlas. The FreeType
-    # loader is auto-selected at Build time because libcimgui was compiled
-    # with IMGUI_ENABLE_FREETYPE. LoadColor only affects fonts that actually
-    # have color layers (COLR/sbix); monochrome fonts render as usual.
-    # The Bitmap flag allows bitmap-only strikes (Apple Color Emoji sbix).
+    # Enable color emoji rasterization for the whole atlas. LoadColor only
+    # affects fonts that actually have color layers (COLR/sbix); monochrome
+    # fonts render as usual. The Bitmap flag allows bitmap-only strikes
+    # (Apple Color Emoji sbix).
+    #
+    # Both flags are read by the FREETYPE loader and by nothing else, so
+    # on a stb_truetype libcimgui setting them is inert -- which is the
+    # whole reason emoji come out as tofu there. Say so once, rather
+    # than leaving it to be rediscovered from a screenshot.
     _set_atlas_font_loader_flags!(fonts, _FT_LOAD_COLOR_FLAG)
+    if !_has_freetype()
+        @warn """
+              libcimgui has no FreeType loader, so colour emoji cannot be \
+              rasterised and will draw as tofu boxes. Latin, box drawing, \
+              Braille and CJK are unaffected. This is a property of the \
+              CImGuiPack_jll binary (0.12.2 is a stb_truetype build), not \
+              of the fonts installed -- see upstream-bugs.md.
+              """ maxlog=1
+    end
 
     primary = _add_first_font(fonts, _MONO_FONT_CANDIDATES, _MONO_GLYPH_RANGES)
+
+    # Merged into the primary in BOTH modes, and deliberately so.
+    # Merging adds a source to an existing font rather than an entry to
+    # `atlas->Fonts`, so the TUI path still finds its three fonts at
+    # indices 0..2 -- while its primary now also draws ⠋. A separate
+    # fourth font would have needed that indexing changed.
+    _merge_first_font(fonts, _SYMBOL_FONT_CANDIDATES, _SYMBOL_GLYPH_RANGES)
+
+    if merge_fallbacks
+        # Order matters: each merge folds into the font added before it,
+        # so the primary must already be there.
+        _merge_first_font(fonts, _CJK_FONT_CANDIDATES, _CJK_GLYPH_RANGES)
+        _merge_first_font(fonts, _EMOJI_FONT_CANDIDATES, _EMOJI_GLYPH_RANGES)
+        # And the SAME emoji file once more, added rather than merged.
+        # Merging folds a source into the primary, and a merged font
+        # cannot be shaped: `RenderShapedText` on it draws NOTHING (an
+        # empty column, verified against a framebuffer dump), which is
+        # why the native path had no way to form a ZWJ ligature and drew
+        # 👨‍👩‍👧‍👦 as four faces. A standalone font shapes correctly, so keep
+        # one purely for that -- ordinary text still uses the merged
+        # primary, and the extra atlas entry costs one more baked font.
+        ManyUICImGui._SHAPED_EMOJI_FONT[] =
+            _add_first_font(fonts, _EMOJI_FONT_CANDIDATES, _EMOJI_GLYPH_RANGES)
+        return (primary, primary, primary)
+    end
+
     cjk = _add_first_font(fonts, _CJK_FONT_CANDIDATES, _CJK_GLYPH_RANGES)
     emoji = _add_first_font(fonts, _EMOJI_FONT_CANDIDATES, _EMOJI_GLYPH_RANGES)
+    # The TUI path shapes through this same font in `_paint_buffer!`.
+    ManyUICImGui._SHAPED_EMOJI_FONT[] = emoji
 
     return (primary, cjk, emoji)
 end
 
-function _draw_widget(w::ManyUI.Label)
-    CImGui.TextUnformatted(w.text[])
+# A `TextLike` flattened to the String the C API needs.
+#
+# `string(rt)` is NOT this. `RichText` defines no `show`, so `string`
+# falls back to the struct repr and a cell captioned "Ada" reached the
+# window as `RichText(TextRun[TextRun("Ada", Style(...))])`. Every
+# `w.cell(...)`, `w.format(...)` and tab title below is declared
+# `TextLike` in ManyUI and may arrive either spelling, so each goes
+# through here.
+#
+# Used where ImGui wants ONE string -- a Selectable's label, a tab
+# caption, a table cell. Where a whole line is ours to draw, prefer
+# `_draw_rich`, which keeps the styling this necessarily drops.
+_plain(x::ManyUI.RichText)::String = ManyUI.plain(x)
+_plain(x::AbstractString)::String = String(x)
+_plain(x)::String = string(x)
+
+# `Label.text[]` and `Static.text[]` hold a `RichText`, not a `String`
+# -- a sequence of runs whose style varies along the line. Handing one
+# straight to `TextUnformatted` threw
+#
+#     MethodError: no method matching unsafe_convert(::Type{Ptr{Int8}}, ::RichText)
+#
+# out of the render loop on the first frame, which took down every
+# native demo the moment it drew its first label.
+#
+# `plain(rt)` alone would fix the crash and throw the styling away, so
+# draw the runs instead: one `TextUnformatted` each, `SameLine(0, 0)`
+# between them so they land on one line with no inserted spacing.
+# That is the whole point of a `RichText` -- a status line that colours
+# only its level, a caption that colours only its shortcut key.
+function _draw_rich(rt::ManyUI.RichText)
+    runs = rt.runs
+    if isempty(runs)
+        # Not `return`: a zero-height gap collapses the line and the
+        # widgets below shift up. An empty string still advances a row.
+        CImGui.TextUnformatted("")
+        return
+    end
+    text_default = CImGui.GetColorU32(CImGui.ImGuiCol_Text)
+    for (i, run) in enumerate(runs)
+        i > 1 && CImGui.SameLine(0, 0)
+        fg = _im_color(run.style.fg, text_default)
+        # Only push when the run actually asks for a colour, so an
+        # unstyled run keeps inheriting whatever the surrounding
+        # style stack set.
+        styled = fg != text_default
+        styled && CImGui.PushStyleColor(CImGui.ImGuiCol_Text, fg)
+        try
+            _draw_run_text(run.text)
+        finally
+            styled && CImGui.PopStyleColor()
+        end
+    end
 end
 
-function _draw_widget(w::ManyUI.Static)
-    CImGui.TextUnformatted(w.text[])
+# The shaping font, or C_NULL. Kept unmerged by `_load_fonts!` precisely
+# so it CAN be shaped -- see the comment there.
+_shaping_font()::Ptr{CImGui.lib.ImFont} =
+    Ptr{CImGui.lib.ImFont}(ManyUICImGui._SHAPED_EMOJI_FONT[])
+
+# Draw one run's text. `TextUnformatted` renders codepoint by codepoint
+# with no GSUB, so a ZWJ family came out as four separate faces and 🇫🇷
+# as the letters F R. Hand each ligature CLUSTER to `RenderShapedText`
+# instead and leave everything else on the plain path, which is both the
+# fast one and the one that gets colour and wrapping right.
+#
+# Falls back to plain text whenever shaping is unavailable: a
+# stb_truetype `libcimgui` (no FreeType, no shaper), or no emoji font
+# installed. The result is then exactly what it was before -- wrong for
+# ZWJ sequences, but nothing worse.
+function _draw_run_text(text::AbstractString)
+    font = _shaping_font()
+    if font == C_NULL || !_has_freetype() || !CImGui.HasShaping()
+        CImGui.TextUnformatted(text)
+        return
+    end
+    pieces = ManyUICImGui._split_ligature_pieces(text)
+    # Nothing to shape: one `TextUnformatted`, as before.
+    if length(pieces) == 1 && !pieces[1][1]
+        CImGui.TextUnformatted(pieces[1][2])
+        return
+    end
+    if isempty(pieces)
+        CImGui.TextUnformatted("")
+        return
+    end
+    font_size = CImGui.GetFontSize()
+    baked = CImGui.GetFontBaked(font, font_size)
+    col = CImGui.GetColorU32(CImGui.ImGuiCol_Text)
+    for (i, (is_lig, piece)) in enumerate(pieces)
+        i > 1 && CImGui.SameLine(0, 0)
+        if !is_lig || baked == C_NULL
+            CImGui.TextUnformatted(piece)
+            continue
+        end
+        # `RenderShapedText` draws through the draw list and does not
+        # move the ImGui cursor, so advance it by hand with a `Dummy` of
+        # the same size -- otherwise the next piece lands on top of this
+        # one. The size is one emoji advance: the cluster collapses to a
+        # SINGLE glyph, so its first codepoint measures it.
+        pos = CImGui.GetCursorScreenPos()
+        sz = CImGui.CalcTextSize(string(first(piece)))
+        w = Float32(sz.x)
+        h = Float32(sz.y)
+        clip = CImGui.lib.ImVec4(Float32(pos.x), Float32(pos.y),
+                                 Float32(pos.x) + w, Float32(pos.y) + h)
+        CImGui.RenderShapedText(CImGui.GetWindowDrawList(), font, baked,
+                                font_size,
+                                CImGui.lib.ImVec2(Float32(pos.x),
+                                                  Float32(pos.y)),
+                                col, clip, piece)
+        CImGui.Dummy((w, h))
+    end
 end
+
+# A `Selectable` draws its own label, and draws it unshaped -- so a list
+# item or a table cell holding 👨‍👩‍👧‍👦 showed four faces even after
+# `_draw_run_text` existed, because the text never went through it.
+#
+# When the label needs shaping, give the Selectable an EMPTY visible
+# label -- it keeps its id, its size and its hit box -- and paint the
+# text over it at the position the Selectable started from. The overlay
+# is drawn after, so it lands on top of the selection highlight.
+# Draw `text` at an absolute screen position through the DRAW LIST,
+# shaping the ligature clusters. Nothing here touches the ImGui cursor,
+# which is the point: moving the cursor back over an item already drawn
+# makes ImGui report
+#
+#     Code uses SetCursorPos()/SetCursorScreenPos() to extend
+#     window/parent boundaries
+#
+# once per row, and put its red error panel over the window.
+function _draw_text_shaped_at(x0::Real, y0::Real, text::AbstractString,
+                              col::UInt32)
+    dl = CImGui.GetWindowDrawList()
+    font = _shaping_font()
+    fs = CImGui.GetFontSize()
+    baked = font == C_NULL ? C_NULL : CImGui.GetFontBaked(font, fs)
+    cur = CImGui.GetFont()
+    x = Float32(x0)
+    y = Float32(y0)
+    for (is_lig, piece) in ManyUICImGui._split_ligature_pieces(text)
+        if is_lig && baked != C_NULL
+            # The cluster collapses to a SINGLE glyph, so its first
+            # codepoint measures the advance -- not the whole string,
+            # which measures the components it is replacing.
+            w = Float32(CImGui.CalcTextSize(string(first(piece))).x)
+            h = Float32(CImGui.CalcTextSize(string(first(piece))).y)
+            clip = CImGui.lib.ImVec4(x, y, x + w, y + h)
+            CImGui.RenderShapedText(dl, font, baked, fs,
+                                    CImGui.lib.ImVec2(x, y), col, clip, piece)
+            x += w
+        else
+            CImGui.AddText(dl, cur, fs, (x, y), col, piece)
+            x += Float32(CImGui.CalcTextSize(piece).x)
+        end
+    end
+    return nothing
+end
+
+# A `Selectable` draws its own label, and draws it unshaped -- so a list
+# item or a table cell holding 👨‍👩‍👧‍👦 showed four faces even after
+# `_draw_run_text` existed, because the text never went through it.
+#
+# When the label needs shaping, give the Selectable an EMPTY visible
+# label -- it keeps its id, its size and its hit box -- and paint the
+# text over it at the position it started from. The overlay is drawn
+# after, so it lands on top of the selection highlight.
+#
+# `flags` is left untyped on purpose: CImGui.jl passes an
+# `ImGuiSelectableFlags_` enum value, not an Integer, and annotating it
+# as one turned every table row into a MethodError inside the render
+# loop (which then failed the `EndTable()` assert on the way out).
+function _selectable_text(label::AbstractString, id::AbstractString,
+                          is_selected::Bool, flags = nothing)::Bool
+    if !ManyUICImGui._needs_shaping(label)
+        return flags === nothing ?
+            CImGui.Selectable("$(label)##$(id)", is_selected) :
+            CImGui.Selectable("$(label)##$(id)", is_selected, flags)
+    end
+    start = CImGui.GetCursorScreenPos()
+    clicked = flags === nothing ?
+        CImGui.Selectable("##$(id)", is_selected) :
+        CImGui.Selectable("##$(id)", is_selected, flags)
+    _draw_text_shaped_at(start.x, start.y, label,
+                         CImGui.GetColorU32(CImGui.ImGuiCol_Text))
+    return clicked
+end
+
+_draw_widget(w::ManyUI.Label) = _draw_rich(w.text[])
+
+_draw_widget(w::ManyUI.Static) = _draw_rich(w.text[])
 
 function _draw_widget(w::ManyUI.Button)
     disabled = w.disabled[]
@@ -351,8 +718,8 @@ function _draw_widget(w::ManyUI.List)
     try
         for (i, item) in enumerate(w.items)
             is_selected = (w.sel.cursor == i) || (i in w.sel.rows)
-            label = string(w.format(item))
-            if CImGui.Selectable("$(label)##$(w.node.id)_$i", is_selected)
+            label = _plain(w.format(item))
+            if _selectable_text(label, "$(w.node.id)_$i", is_selected)
                 if w.sel.cursor != i
                     w.sel.cursor = i
                     w.sel.anchor = i
@@ -376,9 +743,9 @@ function _draw_widget(w::ManyUI.TreeView)
         for (i, r) in enumerate(rows)
             r.depth > 0 && CImGui.Indent(r.depth * 15.0)
             prefix = r.leaf ? "  " : (r.node.expanded ? "v " : "> ")
-            label = prefix * string(w.format(r.node.value))
+            label = prefix * _plain(w.format(r.node.value))
             is_selected = (w.sel.cursor == i) || (i in w.sel.rows)
-            if CImGui.Selectable("$(label)##$(w.node.id)_$i", is_selected)
+            if _selectable_text(label, "$(w.node.id)_$i", is_selected)
                 w.sel.cursor = i
                 w.sel.anchor = i
                 if !r.leaf
@@ -426,10 +793,12 @@ function _draw_widget(w::ManyUI.Table)
                 CImGui.TableNextRow()
                 for j in 1:ncols
                     CImGui.TableSetColumnIndex(j - 1)
-                    label = string(w.cell(row, j))
+                    label = _plain(w.cell(row, j))
                     if j == 1
                         is_selected = (w.sel.cursor == i) || (i in w.sel.rows)
-                        if CImGui.Selectable("$(label)##$(w.node.id)_$(i)_$(j)", is_selected, CImGui.ImGuiSelectableFlags_SpanAllColumns)
+                        if _selectable_text(label, "$(w.node.id)_$(i)_$(j)",
+                                            is_selected,
+                                            CImGui.ImGuiSelectableFlags_SpanAllColumns)
                             if w.sel.cursor != i
                                 w.sel.cursor = i
                                 w.sel.anchor = i
@@ -440,7 +809,7 @@ function _draw_widget(w::ManyUI.Table)
                             w.version[] += 1
                         end
                     else
-                        CImGui.TextUnformatted(label)
+                        _draw_run_text(label)
                     end
                 end
             end
@@ -471,10 +840,12 @@ function _draw_widget(w::ManyUI.DataTable)
                 CImGui.TableNextRow()
                 for j in 1:ncols
                     CImGui.TableSetColumnIndex(j - 1)
-                    label = string(w.cell(row, j))
+                    label = _plain(w.cell(row, j))
                     if j == 1
                         is_selected = (w.sel.cursor == src_i) || (src_i in w.sel.rows)
-                        if CImGui.Selectable("$(label)##$(w.node.id)_$(src_i)_$(j)", is_selected, CImGui.ImGuiSelectableFlags_SpanAllColumns)
+                        if _selectable_text(label, "$(w.node.id)_$(src_i)_$(j)",
+                                            is_selected,
+                                            CImGui.ImGuiSelectableFlags_SpanAllColumns)
                             if w.sel.cursor != src_i
                                 w.sel.cursor = src_i
                                 w.sel.anchor = src_i
@@ -485,7 +856,7 @@ function _draw_widget(w::ManyUI.DataTable)
                             w.version[] += 1
                         end
                     else
-                        CImGui.TextUnformatted(label)
+                        _draw_run_text(label)
                     end
                 end
             end
@@ -536,7 +907,7 @@ function _draw_widget(w::ManyUI.TabStrip)
             for (i, title) in enumerate(w.titles)
                 flags = w.selected[] == i ? CImGui.ImGuiTabItemFlags_SetSelected : 0
                 is_open = Ref(true)
-                if CImGui.BeginTabItem("$(title)##$(w.node.id)_$i", is_open, flags)
+                if CImGui.BeginTabItem("$(_plain(title))##$(w.node.id)_$i", is_open, flags)
                     if w.selected[] != i
                         w.selected[] = i
                     end
@@ -555,6 +926,26 @@ function _draw_widget(w::ManyUI.Container)
         ManyUI.node(child).visible || continue
         _draw_widget(child)
     end
+end
+
+# Close the window the render loop is currently driving. `false` when
+# there is none -- between loops, or under a non-ImGui backend, both of
+# which are ordinary for a caller like the hub that runs every backend
+# from the same code. Installed into `ManyUICImGui._CLOSE_REQUESTER` by
+# `__init__`; see the Ref's docstring for why it is not a method.
+function _request_close!()::Bool
+    win = try
+        CImGui.current_window()
+    catch
+        nothing
+    end
+    (win === nothing || win == C_NULL) && return false
+    try
+        GLFW.SetWindowShouldClose(win, true)
+    catch
+        return false
+    end
+    return true
 end
 
 """
@@ -578,7 +969,11 @@ function ManyUICImGui.launch_manyui(factory::Function; kwargs...)
         end
         nothing
     end
-    ManyUICImGui.launch_imgui(draw; kwargs...)
+    # This path renders whole strings through ImGui's own text calls,
+    # so it needs ONE font covering Latin, CJK and emoji rather than
+    # the three separate ones the TUI painter picks between. Still a
+    # default: an explicit `merge_fallbacks` in `kwargs` wins.
+    ManyUICImGui.launch_imgui(draw; merge_fallbacks = true, kwargs...)
 end
 
 # =====================================================================
@@ -877,19 +1272,10 @@ end
 # - Regional-indicator pairs (U+1F1E6..U+1F1FF): 🇫🇷 flags.
 # ImGui's codepoint-by-codepoint RenderText renders these as components;
 # ImGuiFreeType::RenderShapedText shapes them into the ligature glyph.
-function _is_ligature_cluster(s::AbstractString)::Bool
-    has_zwj = false
-    n_ri = 0
-    for ch in s
-        cp = UInt32(ch)
-        if cp == 0x200D
-            has_zwj = true
-        elseif 0x1F1E6 <= cp <= 0x1F1FF
-            n_ri += 1
-        end
-    end
-    return has_zwj || n_ri >= 2
-end
+# Moved to `ManyUICImGui/src`, next to `_split_ligature_pieces`, so both
+# can be tested without a GPU. Aliased here because the paint loop reads
+# it once per wide cell.
+const _is_ligature_cluster = ManyUICImGui._is_ligature_cluster
 
 # Paint `app.back` (the Buffer the App loop just filled) into the ImGui
 # window using ImDrawList. One AddRectFilled per cell with a non-default
@@ -1029,9 +1415,16 @@ function _paint_buffer!(st::_TuiRenderState)::Nothing
                 # ligature glyph by FT index on demand. Falls back to
                 # AddText for single-codepoint emoji (😀 ❤ ☝) which AddText
                 # already handles.
+                #
+                # `_has_freetype()` and not `isdefined(CImGui, :HasShaping)`.
+                # `isdefined` asks about the JULIA binding, which CImGui.jl's
+                # generated wrapper always defines; the C symbol behind it
+                # exists only in a FreeType build. So on a stb_truetype
+                # libcimgui the old guard passed and `HasShaping()` itself
+                # threw "could not load symbol" -- inside the render loop,
+                # once per ligature cell.
                 if use_font === st.emoji_font && _is_ligature_cluster(draw_content) &&
-                        isdefined(CImGui, :HasShaping) && isdefined(CImGui, :RenderShapedText) &&
-                        CImGui.HasShaping()
+                        _has_freetype() && CImGui.HasShaping()
                     baked = CImGui.GetFontBaked(st.emoji_font, font_size)
                     if baked != C_NULL
                         clip = CImGui.lib.ImVec4(px, row_y, px + span_w, row_y + ch)
@@ -1209,7 +1602,13 @@ function _tui_render_callback(st::_TuiRenderState, app::ManyUITUI.App,
         finally
             CImGui.End()
         end
-        nothing
+        # The App can stop WITHOUT the window being closed: `quit!` from
+        # a Quit button, a demo's exit key, or the hub's Launch button,
+        # which quits the hub App so the demo can take the screen. The
+        # render loop only stops on `:imgui_exit_loop`, so returning
+        # `nothing` unconditionally left the window up painting a dead
+        # App -- and made every such click look inert.
+        ManyUICImGui._tui_exit_signal(st.app.running, is_open[])
     end
 end
 

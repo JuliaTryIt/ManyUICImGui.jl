@@ -167,4 +167,98 @@ end
     end
 end
 
+@testitem "A stopped App ends the ImGui render loop" begin
+    # The regression: `_tui_render_callback` always returned `nothing`,
+    # and the CImGui render loop only stops on `:imgui_exit_loop` (or
+    # the OS window close button). So `quit!` -- what the hub's Launch
+    # and Quit buttons call -- stopped the App while the window stayed
+    # up, painting a dead App. Every click looked like it did nothing.
+    #
+    # The decision lives in `src` and not in the extension precisely so
+    # it can be tested without a GPU: the extension only has to ask.
+    import ManyUICImGui
+
+    # Alive and open -> keep rendering.
+    @test ManyUICImGui._tui_exit_signal(true, true) === nothing
+    # `quit!` stopped the App -> tell the render loop to stop too.
+    @test ManyUICImGui._tui_exit_signal(false, true) === :imgui_exit_loop
+    # The ImGui window itself was closed -> same.
+    @test ManyUICImGui._tui_exit_signal(true, false) === :imgui_exit_loop
+    @test ManyUICImGui._tui_exit_signal(false, false) === :imgui_exit_loop
+end
+
+@testitem "request_close! is a no-op without the graphics deps" begin
+    # The native (`launch_manyui`) path has no App to stop, so a caller
+    # that wants the window gone -- the hub's Launch button -- asks for
+    # it directly. Without the extension there is no window, and asking
+    # must not throw: the hub calls this from every backend.
+    import ManyUICImGui
+
+    @test ManyUICImGui.request_close!() === false
+end
+
+@testitem "Ligature clusters are split out of a line of text" begin
+    # The native (`launch_manyui`) path draws whole strings with
+    # `TextUnformatted`, which is codepoint-by-codepoint: no GSUB, so
+    # 👨‍👩‍👧‍👦 came out as four separate faces and 🇫🇷 as the letters F R.
+    # Those clusters have to be drawn by the shaping path instead, which
+    # means finding them in the middle of ordinary text first.
+    import ManyUICImGui
+    split = ManyUICImGui._split_ligature_pieces
+
+    # Nothing to shape: one piece, untouched.
+    @test split("plain ascii") == [(false, "plain ascii")]
+    @test split("") == Tuple{Bool,String}[]
+
+    # A ZWJ family is one piece, and the text around it survives intact.
+    @test split("famille 👨‍👩‍👧‍👦 fin") ==
+          [(false, "famille "), (true, "👨‍👩‍👧‍👦"), (false, " fin")]
+
+    # A regional-indicator PAIR is one cluster (a flag), not two letters.
+    @test split("🇫🇷") == [(true, "🇫🇷")]
+
+    # A single emoji needs no shaping -- `TextUnformatted` draws it --
+    # so it must NOT be split out, or every emoji would pay for it.
+    @test split("😀") == [(false, "😀")]
+    @test split("cjk 漢字 et é") == [(false, "cjk 漢字 et é")]
+
+    # Two clusters in a row stay separate pieces: each is shaped alone.
+    @test split("👨‍👩‍👧‍👦🇫🇷") == [(true, "👨‍👩‍👧‍👦"), (true, "🇫🇷")]
+
+    # Every piece concatenated back must reproduce the input exactly --
+    # the drawer relies on this to not lose or duplicate text.
+    for s in ("", "plain", "a👨‍👩‍👧‍👦b🇫🇷c", "👨‍👩‍👧‍👦", "é😀漢")
+        @test join(last.(split(s))) == s
+    end
+end
+
+@testitem "Only text containing a ligature cluster needs shaping" begin
+    # The shaped path costs a per-cluster draw call and an overlaid
+    # Selectable, so it must be taken ONLY when it changes the result.
+    # Every ordinary label -- which is nearly all of them -- stays on
+    # the plain path.
+    import ManyUICImGui
+    needs = ManyUICImGui._needs_shaping
+
+    @test !needs("")
+    @test !needs("Launch in Terminal")
+    @test !needs("😀 emoji")          # single codepoint: drawn correctly already
+    @test !needs("漢字 CJK")
+    @test needs("👨‍👩‍👧‍👦")
+    @test needs("regional 🇫🇷 indicators")
+end
+
+@testitem "A ZWJ sequence is one ligature cluster, a lone emoji is not" begin
+    import ManyUICImGui
+    lig = ManyUICImGui._is_ligature_cluster
+
+    @test lig("👨‍👩‍👧‍👦")          # ZWJ sequence
+    @test lig("🇫🇷")           # two regional indicators
+    @test !lig("😀")           # one codepoint, nothing to join
+    @test !lig("a")
+    @test !lig("漢")
+    # ONE regional indicator is not a flag -- no ligature to form.
+    @test !lig("🇫")
+end
+
 @run_package_tests

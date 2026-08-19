@@ -7,7 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `request_close!()`: ask the ImGui window currently rendering to close,
+  reporting whether there was one. The native `launch_manyui` path
+  projects widgets with no `App` behind them, so a callback that means
+  "this window is done" -- the ManyUI hub's Launch button -- had nothing
+  to `quit!` and no way to say so. Returns `false`, never throws, when
+  the extension is asleep or no window is rendering, so a caller that
+  runs every backend from one code path can call it unconditionally.
+
 ### Fixed
+
+- Shape ligature clusters in the NATIVE widget path. `TextUnformatted`
+  and `Selectable` draw codepoint by codepoint with no GSUB, so
+  👨‍👩‍👧‍👦 came out as four separate faces and 🇫🇷 as the letters `F R`
+  (and, on an atlas missing those codepoints, as the missing-glyph
+  box). Each ligature cluster now goes through `RenderShapedText`
+  while the rest of the line stays on the plain call.
+
+  Two things had to be true for this to work. `RenderShapedText`
+  renders NOTHING through a font whose fallbacks were MERGED in, so
+  `_load_fonts!` now also keeps the emoji font as a separate, unmerged
+  atlas entry used only for shaping. And a `Selectable` draws its own
+  label, so a shaped one gets an empty visible label -- same id, same
+  hit box -- with the text painted over it through the draw list,
+  never by moving the ImGui cursor (which makes ImGui report
+  "Code uses SetCursorPos() to extend window/parent boundaries" once
+  per row and raise its error panel).
+
+  Verified against framebuffer dumps of `demos/unicode.jl` in both
+  modes rather than by eye.
+- Close the window when the `App` stops. `launch_tui`'s draw callback
+  always returned `nothing`, and the CImGui render loop ends only on
+  `:imgui_exit_loop` or the OS close button -- so `quit!` (a Quit
+  button, a demo's exit key, the hub's Launch button, which quits the
+  hub so the demo can take the screen) stopped the App while the window
+  stayed up painting a dead one. Every such click looked inert. The new
+  `_tui_exit_signal` makes the decision, in `src` so it is testable
+  without a GPU, and the callback returns it.
+- Draw `Label` and `Static` again in the native widget path. Their
+  `text[]` holds a `RichText`, which went straight to
+  `CImGui.TextUnformatted` and raised
+  `MethodError: no method matching unsafe_convert(::Type{Ptr{Int8}}, ::RichText)`
+  on the first frame -- so every `cimgui` demo died the moment it drew
+  its first label. The runs are now drawn one `TextUnformatted` each,
+  `SameLine(0, 0)` between them, which keeps the per-run colour instead
+  of flattening it away.
+- Flatten `RichText` at the remaining C-string sites -- `List` and
+  `TreeView` items, `Table` and `DataTable` cells, `TabStrip` captions.
+  They used `string(...)`, and `RichText` defines no `show`, so a cell
+  captioned "Ada" reached the window as
+  `RichText(TextRun[TextRun("Ada", Style(...))])`.
+- Render CJK and emoji in the native widget path. `_load_fonts!` added
+  the fallbacks as separate atlas fonts, which suits the TUI painter
+  (it picks one per grapheme) but left them unreachable to
+  `TextUnformatted`, so 漢字 drew as tofu. `launch_manyui` now asks for
+  `merge_fallbacks`, merging them into the primary as Dear ImGui
+  intends.
+- Render the `Spinner`. Its default frames are Braille (⠋⠙⠹…), a range
+  no monospace candidate carries and the atlas did not request, so the
+  one glyph on screen meant to be animating was a tofu box. A symbol
+  fallback (Apple Symbols / DejaVu Sans / Segoe UI Symbol) is now
+  merged into the primary, covering U+2800..U+28FF in both the native
+  and the TUI path.
+- Stop throwing inside the render loop on a libcimgui without FreeType.
+  The shaping guard tested `isdefined(CImGui, :HasShaping)`, which asks
+  about the Julia binding -- always defined by the generated wrapper --
+  so `HasShaping()` was reached and failed to resolve its C symbol. The
+  guard is now `_has_freetype()`, which probes the symbol itself, and
+  the absent FreeType loader is reported once with `@warn` rather than
+  left to be inferred from tofu. Colour emoji remain unavailable on
+  such a build; see `upstream-bugs.md`.
 
 - Fix atlas fallback-font retrieval so CJK / emoji cells route to the
   right font. The previous code read `ImVector<ImFont*>` with
