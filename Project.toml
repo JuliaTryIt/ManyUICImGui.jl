@@ -14,7 +14,7 @@ HarfBuzz = {url = "https://github.com/s-celles/HarfBuzz.jl"}
 
 [compat]
 Aqua = "0.8"
-CImGui = "8"
+CImGui = "8, 9.0"
 GLFW = "3"
 HarfBuzz = "0.1"
 ManyUI = "0.1"
