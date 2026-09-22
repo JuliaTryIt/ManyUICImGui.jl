@@ -32,6 +32,12 @@ jobs:
           - windows-latest
         arch:
           - x64
+        exclude:
+          # macOS-latest is Apple Silicon: setup-julia has no x64 build to install
+          # there, so this leg fails before Julia ever starts. The aarch64 legs
+          # below are the macOS coverage.
+          - os: macOS-latest
+            arch: x64
         include:
           - os: macOS-latest
             arch: aarch64
